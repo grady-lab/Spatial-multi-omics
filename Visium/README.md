@@ -31,10 +31,10 @@ VALIDATION_NOTES.md          Items that require author confirmation before archi
 ## Reproducing the analysis
 
 1. Install R 4.4.0 and the packages listed in `DESCRIPTION`. The manuscript versions of key packages are recorded there.
-2. Create the isolated Python environments with `conda env create -f environment-stlearn.yml`, `conda env create -f environment-cell2location.yml`, and `conda env create -f environment-senepy.yml`. Separate environments avoid incompatible NumPy requirements.
+2. Create the isolated Python environments with `conda env create -f environment-senepy.yml`.
 3. Put Space Ranger outputs and the externally distributed processed objects in the locations described in `data/README.md`.
 4. Edit `config/sample_manifest.csv` only if the local data paths differ.
-5. Run stLearn and Cell2location independently as described in `python/README.md`, or supply their archived output files. The R notebooks never launch these workflows.
+5. Run stLearn and Cell2location independently as described in `python/README.md`, or supply their archived output files.
 6. Run `Rmd/My_Visium.Rmd` from the repository root. SenePy is selected through reticulate from the `adenoma-senepy` environment; stLearn and Cell2location results are imported from `data/derived/`.
 7. Render `Rmd/Clean_plotting.Rmd` and `Rmd/Supple_plotting.Rmd` after the derived objects have been generated.
 
