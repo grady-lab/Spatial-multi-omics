@@ -1,0 +1,463 @@
+---
+title: "Visium analysis workflow"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+params:
+  execute: false
+  run_preprocessing: false
+  cores: 1
+editor_options:
+  chunk_output_type: console
+---
+
+This notebook contains only analyses reported in the Methods. Exploratory, deprecated, and figure-only code is intentionally omitted. Set `execute: true` when the inputs described in `data/README.md` are available.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  eval = isTRUE(params$execute),
+  message = FALSE,
+  warning = FALSE
+)
+```
+
+```{r libraries}
+library(Seurat)
+library(SeuratWrappers)
+library(tidyverse)
+library(Matrix)
+library(qs)
+library(here)
+
+source(here("R", "preprocessing.R"))
+source(here("R", "scoring.R"))
+source(here("R", "Cal_senepy.R"))
+source(here("R", "spatial_statistics.R"))
+source(here("R", "plotting.R"))
+
+set.seed(1)
+dir.create(here("data", "derived"), recursive = TRUE, showWarnings = FALSE)
+dir.create(here("results", "tables"), recursive = TRUE, showWarnings = FALSE)
+```
+
+# Visium loading, QC, and multimodal integration
+
+RNA spots are retained when total UMI count is greater than 300 and mitochondrial RNA is below 40%. `Load10X_Spatial(filter.matrix = TRUE)` restricts loading to the Space Ranger tissue mask. ADT spots must have at least 20 detected target antibodies and less than 20% of counts in isotype controls.
+
+```{r load-and-qc}
+manifest <- read_sample_manifest(here("config", "sample_manifest.csv"))
+
+if (isTRUE(params$run_preprocessing)) {
+  visium_list <- load_visium_samples(manifest)
+  visium_list <- purrr::map(visium_list, qc_rna, min_umi = 300, max_mito = 40)
+  visium_list <- add_pathology_annotations(
+    visium_list,
+    here("data", "reference", "pathology_annotations.csv")
+  )
+  merged <- merge_visium_samples(visium_list)
+}
+```
+
+RNA is log-normalized using 2,000 variable features, scaled, reduced by PCA, and corrected across slides with FastMNN. ADTs are DSB-normalized within slide using isotype controls, scaled, and corrected with Harmony. WNN uses 30 RNA and 15 ADT dimensions; clustering uses the SLM implementation (`algorithm = 3`).
+
+```{r multimodal-reference}
+if (isTRUE(params$run_preprocessing)) {
+  integrated <- build_multimodal_reference(
+    merged,
+    rna_dims = 30,
+    adt_dims = 15,
+    resolution = 0.4,
+    seed = 1
+  )
+
+  mapped_query <- map_rna_only_spots(
+    reference = integrated$reference,
+    query = integrated$query,
+    dims = 30,
+    seed = 1
+  )
+  combined_final <- merge_reference_and_query(integrated$reference, mapped_query)
+  qs::qsave(combined_final, here("data", "derived", "visium_integrated.qs"), preset = "high")
+} else {
+  combined_final <- qs::qread(here("data", "derived", "visium_integrated.qs"))
+}
+```
+
+# Cluster markers and annotations
+
+```{r cluster-markers}
+DefaultAssay(combined_final) <- "Spatial"
+combined_final <- JoinLayers(combined_final, assay = "Spatial")
+Idents(combined_final) <- factor(combined_final$combined_cluster)
+
+cluster_markers <- FindAllMarkers(
+  combined_final,
+  only.pos = TRUE,
+  logfc.threshold = 0,
+  group.by = "combined_cluster"
+) |>
+  filter(p_val_adj < 0.05, !grepl("^MT-", gene)) |>
+  mutate(delta_pct = pct.1 - pct.2)
+
+write_csv(cluster_markers, here("results", "tables", "cluster_markers.csv"))
+
+cluster_by_size <- table(combined_final$combined_cluster, combined_final$LargeSmall)
+cluster_size_chisq <- chisq.test(cluster_by_size)
+cluster_size_posthoc <- chisq.posthoc.test::chisq.posthoc.test(
+  cluster_by_size,
+  method = "fdr"
+)
+```
+
+Cluster names used throughout the paper were assigned by jointly reviewing these RNA markers, normalized ADTs, and spatial localization relative to the pathology annotations. No expression-derived pathology labels are created in this notebook.
+
+# Gene-set, senescence, cell-cycle, and developmental-potential scores
+
+```{r irgsea}
+gene_sets <- readRDS(here("data", "reference", "gene_sets.rds"))
+combined_final <- run_irgsea(
+  combined_final,
+  gene_sets = gene_sets,
+  group_by = "combined_cluster",
+  assay = "Spatial"
+)
+
+combined_final <- copy_ucell_scores(
+  combined_final,
+  c(
+    SenMayo = "SenMayo",
+    IEX = "IEX",
+    Stem_Signature = "Stem_Signature"
+  )
+)
+```
+
+```{r senepy-cell-cycle-cytotrace}
+combined_final <- Calculate_senepy(combined_final, assay = "Spatial", layer = "data")
+combined_final$Senepy <- combined_final$Universal_score
+combined_final <- classify_senepy_outliers(
+  combined_final,
+  score_col = "Senepy",
+  output_col = "SenePyhigh"
+)
+combined_final <- add_cell_cycle_scores(combined_final, assay = "Spatial")
+
+cytotrace <- run_cytotrace2(combined_final, assay = "Spatial", ncores = params$cores)
+combined_final$CytoTRACE2_Score <- cytotrace$CytoTRACE2_Score
+```
+
+# Spatial pseudotime and diffusion map
+
+stLearn was run independently in Python/JupyterLab, not from R. Per-sample H5AD inputs must contain raw expression, `Adenoma`, `combined_cluster`, array coordinates, image coordinates, and Visium spatial metadata. See `python/README.md` for the standalone workflow. This section imports its results and calculates the diffusion map in R.
+
+```{r import-stlearn-output}
+pseudotime_files <- list.files(
+  here("data", "derived", "pseudotime"),
+  pattern = "[.]pseudotime[.]csv$",
+  full.names = TRUE
+)
+pseudotime <- purrr::map_dfr(pseudotime_files, read_csv, show_col_types = FALSE)
+
+raw_barcode <- sub("^.*_([ACGT]+-[0-9]+)$", "\\1", colnames(combined_final))
+lookup <- tibble(
+  seurat_barcode = colnames(combined_final),
+  sample_id = combined_final$Sample_ID,
+  barcode = raw_barcode
+)
+pseudotime <- left_join(pseudotime, lookup, by = c("sample_id", "barcode"))
+combined_final$dpt_pseudotime <- pseudotime$dpt_pseudotime[
+  match(colnames(combined_final), pseudotime$seurat_barcode)
+]
+
+epithelial_clusters <- c("0", "1", "2", "3", "4", "6", "8")
+epithelial <- subset(
+  combined_final,
+  cells = colnames(combined_final)[
+    combined_final$combined_cluster %in% epithelial_clusters &
+      combined_final$Adenoma %in% c("Normal", "Low-grade")
+  ]
+)
+DefaultAssay(epithelial) <- "Spatial"
+epithelial[["Spatial"]] <- split(epithelial[["Spatial"]], f = epithelial$Sample_ID)
+epithelial <- epithelial |>
+  NormalizeData(verbose = FALSE) |>
+  FindVariableFeatures(nfeatures = 2000, verbose = FALSE) |>
+  ScaleData(verbose = FALSE) |>
+  RunPCA(npcs = 20, verbose = FALSE)
+epithelial <- IntegrateLayers(
+  epithelial,
+  method = FastMNNIntegration,
+  orig.reduction = "pca",
+  new.reduction = "mnn",
+  verbose = FALSE
+)
+epithelial <- add_diffusion_map(epithelial, reduction = "mnn", dims = 1:20, sigma = 1)
+qs::qsave(epithelial, here("data", "derived", "epithelial_diffusion_map.qs"))
+```
+
+# Cell2location deconvolution
+
+Cell2location was also run independently in Python/JupyterLab. The R workflow imports only its fifth-percentile posterior abundance estimates; these estimates are not used to define CD8-positive spots or CD8 neighborhoods.
+
+```{r import-cell2location-output}
+cell2location_q05 <- read_csv(
+  here("data", "derived", "cell2location", "cell2location_q05.csv"),
+  show_col_types = FALSE
+)
+colnames(cell2location_q05)[1] <- "barcode"
+rownames(cell2location_q05) <- cell2location_q05$barcode
+cell2location_q05$barcode <- NULL
+combined_final <- AddMetaData(
+  combined_final,
+  cell2location_q05[intersect(colnames(combined_final), rownames(cell2location_q05)), , drop = FALSE]
+)
+```
+
+# Differential expression
+
+All three tests use dysplastic clusters C2 and C4 where specified. Stemness cutoffs are the cohort-wide lower and upper quartiles across C2/C4; intermediate spots are removed. Senescence outliers use the cohort-wide definition above. Secreted genes are filtered after the pathologist-defined dysplastic-versus-normal test.
+
+```{r differential-expression}
+DefaultAssay(combined_final) <- "Spatial"
+Idents(combined_final) <- factor(combined_final$combined_cluster)
+dysplastic <- subset(combined_final, idents = c("2", "4"))
+
+de_advanced <- FindMarkers(
+  dysplastic,
+  group.by = "LargeSmall",
+  ident.1 = "Large",
+  ident.2 = "Small",
+  logfc.threshold = 0,
+  min.pct = 0
+)
+
+stem_cutoffs <- quantile(dysplastic$Stem_Signature, c(0.25, 0.75), na.rm = TRUE)
+dysplastic$StemGroup <- case_when(
+  dysplastic$Stem_Signature <= stem_cutoffs[[1]] ~ "Low",
+  dysplastic$Stem_Signature >= stem_cutoffs[[2]] ~ "High",
+  TRUE ~ "Intermediate"
+)
+de_stemness <- FindMarkers(
+  subset(dysplastic, subset = StemGroup != "Intermediate"),
+  group.by = "StemGroup",
+  ident.1 = "High",
+  ident.2 = "Low",
+  logfc.threshold = 0,
+  min.pct = 0
+)
+
+senescent_epithelial <- subset(
+  combined_final,
+  cells = colnames(combined_final)[
+    combined_final$SenePyhigh &
+      combined_final$combined_cluster %in% epithelial_clusters &
+      combined_final$Adenoma %in% c("Normal", "Low-grade")
+  ]
+)
+de_senescence_region <- FindMarkers(
+  senescent_epithelial,
+  group.by = "Adenoma",
+  ident.1 = "Low-grade",
+  ident.2 = "Normal",
+  logfc.threshold = 0,
+  min.pct = 0
+)
+secreted <- read_tsv(here("data", "reference", "secreted_genes.tsv"), show_col_types = FALSE)$Gene
+de_senescence_secreted <- de_senescence_region[rownames(de_senescence_region) %in% secreted, , drop = FALSE]
+
+write_csv(rownames_to_column(de_advanced, "gene"), here("results", "tables", "de_advanced_vs_nonadvanced.csv"))
+write_csv(rownames_to_column(de_stemness, "gene"), here("results", "tables", "de_stemness_high_vs_low.csv"))
+write_csv(rownames_to_column(de_senescence_secreted, "gene"), here("results", "tables", "de_senescence_secreted.csv"))
+```
+
+# Bivariate local Moran's I
+
+```{r local-moran}
+moran_data <- spatial_metadata(combined_final)
+moran_data$GDF15 <- extract_feature(
+  combined_final,
+  "GDF15",
+  assay = "Spatial"
+)[moran_data$barcode]
+moran_data$`ADT-CD8A` <- extract_feature(
+  combined_final,
+  "ADT-CD8A",
+  assay = "ADT_dsb"
+)[moran_data$barcode]
+coord_cols <- if (all(c("x", "y") %in% colnames(moran_data))) c("x", "y") else c("imagecol", "imagerow")
+
+moran_sen_stem <- bivariate_local_moran(
+  moran_data,
+  x = "Senepy",
+  y = "Stem_Signature",
+  coord_cols = coord_cols,
+  k = 6,
+  permutations = 999,
+  seed = 1
+)
+moran_gdf15_cd8 <- bivariate_local_moran(
+  moran_data,
+  x = "GDF15",
+  y = "ADT-CD8A",
+  coord_cols = coord_cols,
+  k = 6,
+  permutations = 999,
+  seed = 1
+)
+write_csv(moran_sen_stem, here("results", "tables", "local_moran_senescence_stemness.csv"))
+write_csv(moran_gdf15_cd8, here("results", "tables", "local_moran_gdf15_cd8.csv"))
+```
+
+# Partial spatial correlation
+
+```{r partial-spatial-correlation}
+lag_data <- spatial_metadata(
+  combined_final,
+  variables = c("GDF15", "Senepy", "Stem_Signature")
+) |>
+  filter(Adenoma == "Low-grade")
+
+before_gdf15 <- spatial_lag_correlations(
+  lag_data,
+  x = "Senepy",
+  y = "Stem_Signature",
+  adjust_x_for = NULL,
+  adjust_y_for = NULL,
+  coord_cols = c("array_row", "array_col"),
+  k = 6
+)
+after_gdf15 <- spatial_lag_correlations(
+  lag_data,
+  x = "Senepy",
+  y = "Stem_Signature",
+  adjust_x_for = "GDF15",
+  adjust_y_for = "GDF15",
+  coord_cols = c("array_row", "array_col"),
+  k = 6
+)
+partial_spatial_test <- compare_before_after(
+  before_gdf15,
+  after_gdf15,
+  permutations = 999,
+  seed = 1
+)
+write_csv(partial_spatial_test$table, here("results", "tables", "partial_spatial_correlation.csv"))
+```
+
+# CD8 neighborhood analysis
+
+```{r cd8-neighborhood}
+cd8_data <- prepare_cd8_neighborhood_data(combined_final)
+cd8_region <- cd8_density_by_source(
+  cd8_data,
+  comparison = "region",
+  radius_multiplier = 2,
+  min_sources = 5
+)
+cd8_gdf15 <- cd8_density_by_source(
+  cd8_data,
+  comparison = "gdf15",
+  radius_multiplier = 2,
+  min_sources = 10
+)
+
+cd8_region_test <- wilcox.test(cd8_region$Low_grade, cd8_region$Normal, paired = TRUE, exact = FALSE)
+cd8_gdf15_test <- cd8_gdf15 |>
+  group_by(Adenoma) |>
+  summarise(
+    n_samples = sum(complete.cases(GDF15_high, GDF15_low)),
+    p_value = wilcox.test(GDF15_high, GDF15_low, paired = TRUE, exact = FALSE)$p.value,
+    median_difference = median(GDF15_high - GDF15_low, na.rm = TRUE),
+    .groups = "drop"
+  )
+write_csv(cd8_region, here("results", "tables", "cd8_density_region.csv"))
+write_csv(cd8_gdf15, here("results", "tables", "cd8_density_gdf15_high_low.csv"))
+```
+
+# Luminal-surface distance
+
+```{r luminal-distance}
+surface_annotations <- read_csv(
+  here("data", "reference", "luminal_surface_annotations.csv"),
+  show_col_types = FALSE
+)
+surface_object <- qs::qread(here("data", "derived", "visium_semla.qs"))
+surface_object <- separate_tissue_islands_semla(surface_object)
+staffli_coordinates <- surface_object@tools$Staffli@meta_data |>
+  as_tibble() |>
+  select(barcode, pxl_col_in_fullres, pxl_row_in_fullres)
+surface_data <- surface_object@meta.data |>
+  rownames_to_column("barcode") |>
+  select(barcode, Sample_ID, Adenoma, tissue_island, Senepy, Stem_Signature) |>
+  left_join(staffli_coordinates, by = "barcode") |>
+  left_join(surface_annotations, by = c("Sample_ID" = "sample_id", "barcode"))
+surface_distance <- distance_to_surface(surface_data, surface_col = "surface")
+surface_data <- left_join(surface_data, surface_distance, by = c("Sample_ID", "tissue_island", "barcode"))
+
+stem_distance_bins <- summarize_distance_bins(surface_data, score = "Stem_Signature")
+senescence_distance_bins <- summarize_distance_bins(surface_data, score = "Senepy")
+write_csv(stem_distance_bins, here("results", "tables", "surface_distance_stemness.csv"))
+write_csv(senescence_distance_bins, here("results", "tables", "surface_distance_senescence.csv"))
+```
+
+# Sample-level continuous and compositional tests
+
+```{r sample-level-statistics}
+senescence_large_small <- compare_sample_summaries(
+  combined_final@meta.data,
+  score = "Senepy",
+  condition = "LargeSmall",
+  levels = c("Small", "Large"),
+  paired = FALSE
+)
+
+cluster_composition <- composition_tests(
+  combined_final@meta.data,
+  category = "combined_cluster",
+  condition = "LargeSmall",
+  sample_col = "Sample_ID",
+  paired = FALSE,
+  permutations = 999,
+  seed = 1
+)
+write_csv(cluster_composition$posthoc, here("results", "tables", "cluster_composition_posthoc.csv"))
+```
+
+# Public single-cell validation
+
+The public discovery and validation objects are restricted to tubular/tubulovillous adenomas before this step. Original published embeddings and annotations are retained in the complete objects; epithelial subsets are re-normalized and re-clustered for the subpopulation analysis.
+
+```{r single-cell-validation}
+validation_objects <- list(
+  discovery = qs::qread(here("data", "reference", "validation_discovery.qs")),
+  validation = qs::qread(here("data", "reference", "validation_validation.qs"))
+)
+
+recluster_epithelium <- function(object, epithelial_cells, resolution = 0.4) {
+  subset(object, cells = epithelial_cells) |>
+    NormalizeData(verbose = FALSE) |>
+    FindVariableFeatures(nfeatures = 2000, verbose = FALSE) |>
+    ScaleData(verbose = FALSE) |>
+    RunPCA(npcs = 30, verbose = FALSE) |>
+    FindNeighbors(dims = 1:30, verbose = FALSE) |>
+    FindClusters(resolution = resolution, algorithm = 3, verbose = FALSE) |>
+    RunUMAP(dims = 1:30, seed.use = 1, verbose = FALSE)
+}
+
+validation_epithelium <- purrr::map(validation_objects, function(object) {
+  epithelial_cells <- rownames(object@meta.data)[object$Cell_Type == "ASC"]
+  epithelial <- recluster_epithelium(object, epithelial_cells)
+  epithelial <- run_irgsea(epithelial, gene_sets, group_by = "seurat_clusters", assay = "RNA")
+  epithelial <- Calculate_senepy(epithelial, assay = "RNA", layer = "data")
+  epithelial$Senepy <- epithelial$Universal_score
+  epithelial
+})
+qs::qsave(validation_epithelium, here("data", "derived", "single_cell_validation.qs"))
+```
+
+```{r save-final-object}
+qs::qsave(combined_final, here("data", "derived", "visium_scored.qs"), preset = "high")
+writeLines(capture.output(sessionInfo()), here("results", "sessionInfo.txt"))
+```

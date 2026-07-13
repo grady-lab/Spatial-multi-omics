@@ -1,0 +1,47 @@
+# R/RStudio state
+.RData
+.Rhistory
+.Rproj.user/
+.Renviron
+renv/library/
+renv/staging/
+
+# Python state
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.venv/
+
+# Raw and derived data are distributed separately
+data/raw/**
+!data/raw/README.md
+data/derived/**
+!data/derived/README.md
+
+# Generated results
+results/figures/**
+!results/figures/.gitkeep
+results/tables/**
+!results/tables/.gitkeep
+
+# Large scientific file types and crash dumps
+*.rds
+*.RDS
+*.qs
+*.qs2
+*.h5
+*.h5ad
+*.loom
+*.npy
+*.tif
+*.tiff
+*.tar.gz
+core
+core.*
+
+# Rendered notebook output
+Rmd/*_files/
+Rmd/*_cache/
+Rmd/*.html
+Rmd/*.pdf
+.DS_Store

@@ -1,0 +1,5 @@
+seurat_feature,reagent_name,analysis_role
+ADT-CD3E,CD3E,Composite CD8-positive spot gate
+ADT-CD8A,CD8A,Composite CD8-positive spot gate
+ADT-PTPRC,CD45RA,Composite CD8-positive spot gate
+ADT-PTPRC.2,CD45RO,Composite CD8-positive spot gate

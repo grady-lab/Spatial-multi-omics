@@ -1,0 +1,186 @@
+---
+title: "Main figure generation"
+output:
+  html_document:
+    toc: true
+params:
+  execute: false
+---
+
+This notebook contains the main-figure plotting code only. Statistical calculations are performed in `My_Visium.Rmd` and read here from saved tables.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval = isTRUE(params$execute), message = FALSE, warning = FALSE)
+```
+
+```{r libraries}
+library(Seurat)
+library(tidyverse)
+library(qs)
+library(here)
+library(patchwork)
+source(here("R", "plotting.R"))
+
+combined_final <- qread(here("data", "derived", "visium_scored.qs"))
+epithelial <- qread(here("data", "derived", "epithelial_diffusion_map.qs"))
+figure_dir <- here("results", "figures", "main")
+dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
+```
+
+# Figure 2: multimodal atlas
+
+```{r figure-2-umap}
+p2a <- DimPlot(
+  combined_final,
+  reduction = "wnn.umap",
+  group.by = "combined_cluster",
+  cols = cluster_colors,
+  label = TRUE
+) + theme_void()
+save_plot(p2a, file.path(figure_dir, "Figure2A_cluster_umap.pdf"), 5, 4)
+```
+
+```{r figure-2-spatial}
+main_samples <- c("R3_large_3", "R3_large_4", "R2_small_1", "Pilot_small_1")
+p2b <- plot_spatial_samples(
+  combined_final,
+  group_by = "combined_cluster",
+  samples = main_samples,
+  colors = cluster_colors,
+  ncol = 2
+)
+save_plot(p2b, file.path(figure_dir, "Figure2B_spatial_clusters.pdf"), 8, 6)
+```
+
+```{r figure-2-markers}
+rna_markers <- c(
+  "LGR5", "ASCL2", "OLFM4", "AXIN2",
+  "MKI67", "TOP2A", "PCNA",
+  "CDKN1A", "CDKN2B", "TP53", "GLB1",
+  "SLC26A3", "CA2", "CLCA1", "TFF3", "CEACAM7",
+  "COL3A1", "DES", "GREM1", "TRAC", "MS4A1", "PTPRC"
+)
+DefaultAssay(combined_final) <- "Spatial"
+p2c_rna <- DotPlot(combined_final, features = rna_markers, group.by = "combined_cluster") +
+  RotatedAxis() + theme_classic() + labs(x = NULL, y = NULL)
+
+adt_markers <- c(
+  "ADT-EPCAM", "ADT-PECAM1", "ADT-VIM", "ADT-ACTA2", "ADT-PTPRC",
+  "ADT-CD3E", "ADT-CD4", "ADT-CD8A", "ADT-CD19", "ADT-MS4A1",
+  "ADT-CD68", "ADT-CD163", "ADT-PDCD1", "ADT-CD274"
+)
+DefaultAssay(combined_final) <- "ADT_dsb"
+p2c_adt <- DotPlot(combined_final, features = adt_markers, group.by = "combined_cluster") +
+  RotatedAxis() + theme_classic() + labs(x = NULL, y = NULL)
+save_plot(p2c_rna, file.path(figure_dir, "Figure2C_RNA_markers.pdf"), 8, 5)
+save_plot(p2c_adt, file.path(figure_dir, "Figure2C_ADT_markers.pdf"), 8, 5)
+```
+
+```{r figure-2-cell-cycle}
+cell_cycle <- combined_final@meta.data |>
+  count(Sample_ID, combined_cluster, Phase) |>
+  group_by(Sample_ID, combined_cluster) |>
+  mutate(proportion = n / sum(n)) |>
+  ungroup()
+p2d <- ggplot(cell_cycle, aes(combined_cluster, proportion, fill = Phase)) +
+  geom_col() + theme_classic() + labs(x = "Cluster", y = "Spot fraction")
+save_plot(p2d, file.path(figure_dir, "Figure2_cell_cycle.pdf"), 6, 4)
+```
+
+# Figure 3: epithelial states and trajectories
+
+```{r figure-3-diffusion}
+p3a <- DimPlot(
+  epithelial,
+  reduction = "diffmap",
+  group.by = "combined_cluster",
+  cols = cluster_colors
+) + theme_void()
+
+p3b <- FeaturePlot(
+  epithelial,
+  reduction = "diffmap",
+  features = c("dpt_pseudotime", "Senepy", "Stem_Signature", "GDF15"),
+  ncol = 2,
+  keep.scale = "feature"
+) & theme_void()
+save_plot(p3a, file.path(figure_dir, "Figure3A_diffusion_clusters.pdf"), 5, 4)
+save_plot(p3b, file.path(figure_dir, "Figure3B_diffusion_features.pdf"), 8, 7)
+```
+
+```{r figure-3-spatial-scores}
+DefaultAssay(combined_final) <- "Spatial"
+p3c <- SpatialFeaturePlot(
+  combined_final,
+  images = c("R4_large_2", "Pilot_large_2"),
+  features = c("Senepy", "Stem_Signature", "GDF15"),
+  ncol = 3,
+  keep.scale = "feature"
+)
+save_plot(p3c, file.path(figure_dir, "Figure3C_spatial_scores.pdf"), 10, 6)
+```
+
+```{r figure-3-developmental-potential}
+p3d <- FeaturePlot(
+  combined_final,
+  reduction = "wnn.umap",
+  features = "CytoTRACE2_Score"
+) + theme_void()
+save_plot(p3d, file.path(figure_dir, "Figure3D_cytotrace.pdf"), 5, 4)
+```
+
+# Figure 4: spatial associations and CD8 neighborhoods
+
+```{r figure-4-partial-correlation}
+partial_spatial <- read_csv(
+  here("results", "tables", "partial_spatial_correlation.csv"),
+  show_col_types = FALSE
+)
+partial_long <- partial_spatial |>
+  select(Sample_ID, group, rho_before, rho_after) |>
+  pivot_longer(c(rho_before, rho_after), names_to = "Adjustment", values_to = "rho") |>
+  mutate(
+    Adjustment = recode(Adjustment, rho_before = "Before", rho_after = "After"),
+    Adjustment = factor(Adjustment, levels = c("Before", "After"))
+  )
+p4a <- sample_level_boxplot(partial_long, "Adjustment", "rho") +
+  facet_wrap(~group) + ylab("Spatial lag Spearman rho")
+save_plot(p4a, file.path(figure_dir, "Figure4A_partial_spatial_correlation.pdf"), 6, 4)
+```
+
+```{r figure-4-local-moran}
+moran <- read_csv(
+  here("results", "tables", "local_moran_senescence_stemness.csv"),
+  show_col_types = FALSE
+)
+p4b <- ggplot(
+  filter(moran, local_bimoran_class != "Not significant"),
+  aes(local_bimoran_class, fill = local_bimoran_class)
+) +
+  geom_bar() +
+  scale_fill_manual(values = moran_colors) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1), legend.position = "none") +
+  labs(x = NULL, y = "Significant spots")
+save_plot(p4b, file.path(figure_dir, "Figure4B_local_moran_classes.pdf"), 5, 4)
+```
+
+```{r figure-4-cd8}
+cd8_region <- read_csv(here("results", "tables", "cd8_density_region.csv"), show_col_types = FALSE)
+cd8_gdf15 <- read_csv(here("results", "tables", "cd8_density_gdf15_high_low.csv"), show_col_types = FALSE)
+
+p4c <- cd8_region |>
+  pivot_longer(c(Normal, Low_grade), names_to = "Region", values_to = "Density") |>
+  mutate(Region = recode(Region, Low_grade = "Low-grade")) |>
+  sample_level_boxplot("Region", "Density") +
+  ylab("CD8-positive neighbor fraction")
+
+p4d <- cd8_gdf15 |>
+  pivot_longer(c(GDF15_low, GDF15_high), names_to = "GDF15", values_to = "Density") |>
+  mutate(GDF15 = recode(GDF15, GDF15_low = "Low", GDF15_high = "High")) |>
+  sample_level_boxplot("GDF15", "Density") +
+  facet_wrap(~Adenoma) + ylab("CD8-positive neighbor fraction")
+
+save_plot(p4c, file.path(figure_dir, "Figure4C_CD8_region.pdf"), 4, 4)
+save_plot(p4d, file.path(figure_dir, "Figure4D_CD8_GDF15.pdf"), 7, 4)
+```

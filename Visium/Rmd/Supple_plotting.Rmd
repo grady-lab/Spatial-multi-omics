@@ -1,0 +1,149 @@
+---
+title: "Supplementary figure generation"
+output:
+  html_document:
+    toc: true
+params:
+  execute: false
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval = isTRUE(params$execute), message = FALSE, warning = FALSE)
+```
+
+```{r libraries}
+library(Seurat)
+library(tidyverse)
+library(qs)
+library(here)
+library(patchwork)
+source(here("R", "plotting.R"))
+
+combined_final <- qread(here("data", "derived", "visium_scored.qs"))
+epithelial <- qread(here("data", "derived", "epithelial_diffusion_map.qs"))
+figure_dir <- here("results", "figures", "supplementary")
+dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
+```
+
+# All sections and pathology annotations
+
+```{r all-sections}
+sample_order <- read_csv(here("config", "sample_manifest.csv"), show_col_types = FALSE) |>
+  filter(include) |>
+  pull(sample_id)
+
+s1_clusters <- plot_spatial_samples(
+  combined_final,
+  group_by = "combined_cluster",
+  samples = sample_order,
+  colors = cluster_colors,
+  ncol = 5,
+  point_size = 1.3
+)
+s1_pathology <- plot_spatial_samples(
+  combined_final,
+  group_by = "Adenoma",
+  samples = sample_order,
+  colors = region_colors,
+  ncol = 5,
+  point_size = 1.3
+)
+save_plot(s1_clusters, file.path(figure_dir, "SFigure_all_sections_clusters.pdf"), 16, 14)
+save_plot(s1_pathology, file.path(figure_dir, "SFigure_all_sections_pathology.pdf"), 16, 14)
+```
+
+# Quality control and modality contributions
+
+```{r qc}
+qc <- combined_final@meta.data |>
+  select(Sample_ID, nCount_Spatial, nFeature_Spatial, percent.mt, ADT_n_detected, ADT_isotype_fraction) |>
+  pivot_longer(-Sample_ID, names_to = "metric", values_to = "value")
+s2 <- ggplot(qc, aes(Sample_ID, value)) +
+  geom_boxplot(outlier.size = 0.2) +
+  facet_wrap(~metric, scales = "free_y", ncol = 2) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+save_plot(s2, file.path(figure_dir, "SFigure_QC.pdf"), 12, 9)
+```
+
+# Additional score, pseudotime, and deconvolution views
+
+```{r score-features}
+s3 <- FeaturePlot(
+  combined_final,
+  reduction = "wnn.umap",
+  features = c("SenMayo", "IEX", "Stem_Signature", "Senepy", "CytoTRACE2_Score", "dpt_pseudotime"),
+  ncol = 3,
+  keep.scale = "feature"
+) & theme_void()
+save_plot(s3, file.path(figure_dir, "SFigure_scores_umap.pdf"), 11, 7)
+```
+
+```{r pseudotime-spatial}
+s4 <- SpatialFeaturePlot(
+  combined_final,
+  features = "dpt_pseudotime",
+  images = sample_order,
+  ncol = 5,
+  keep.scale = "all"
+)
+save_plot(s4, file.path(figure_dir, "SFigure_pseudotime_all_sections.pdf"), 16, 14)
+```
+
+```{r cell2location}
+cell_types <- intersect(
+  c("Dysplastic_Stem_like", "Dysplastic_Senescent_like", "Dysplastic_Proliferating", "CD8.T", "Fibroblast"),
+  colnames(combined_final@meta.data)
+)
+s5 <- FeaturePlot(combined_final, reduction = "wnn.umap", features = cell_types, ncol = 3) & theme_void()
+save_plot(s5, file.path(figure_dir, "SFigure_cell2location.pdf"), 11, 7)
+```
+
+# Luminal-surface distance
+
+```{r surface-distance}
+stem_distance <- read_csv(here("results", "tables", "surface_distance_stemness.csv"), show_col_types = FALSE)
+senescence_distance <- read_csv(here("results", "tables", "surface_distance_senescence.csv"), show_col_types = FALSE)
+distance_data <- bind_rows(
+  mutate(stem_distance, score = "Stemness"),
+  mutate(senescence_distance, score = "Senescence")
+)
+s6 <- ggplot(distance_data, aes(distance_bin_um, mean_score, color = Adenoma)) +
+  geom_point(aes(size = n_spots), alpha = 0.7) +
+  geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs"), se = TRUE) +
+  facet_wrap(~score, scales = "free_y", ncol = 1) +
+  scale_color_manual(values = region_colors) +
+  theme_classic() +
+  labs(x = "Distance from luminal surface (micrometers)", y = "Mean score per 100-micrometer bin")
+save_plot(s6, file.path(figure_dir, "SFigure_surface_distance.pdf"), 6, 8)
+```
+
+# Public single-cell validation
+
+```{r single-cell-validation}
+validation <- qread(here("data", "derived", "single_cell_validation.qs"))
+s7 <- imap(validation, function(object, cohort) {
+  DimPlot(object, group.by = "seurat_clusters", label = TRUE) +
+    FeaturePlot(object, features = c("Senepy", "Stem_Signature", "GDF15"), ncol = 3) +
+    plot_annotation(title = cohort)
+}) |>
+  wrap_plots(ncol = 1)
+save_plot(s7, file.path(figure_dir, "SFigure_single_cell_validation.pdf"), 12, 10)
+```
+
+# Sample-level cluster comparisons
+
+```{r cluster-comparisons}
+cluster_summary <- combined_final@meta.data |>
+  group_by(Sample_ID, combined_cluster) |>
+  summarise(Senepy = median(Senepy, na.rm = TRUE), n = n(), .groups = "drop") |>
+  filter(n >= 30, combined_cluster %in% c("2", "3", "4"))
+s8 <- ggplot(cluster_summary, aes(combined_cluster, Senepy, group = Sample_ID, fill = combined_cluster)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_line(alpha = 0.25) +
+  geom_point() +
+  scale_fill_manual(values = cluster_colors) +
+  theme_classic() +
+  labs(x = "Cluster", y = "Per-sample median SenePy score")
+save_plot(s8, file.path(figure_dir, "SFigure_cluster_senescence.pdf"), 5, 4)
+```
