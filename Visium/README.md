@@ -6,7 +6,7 @@ This repository contains the minimal analysis and figure-generation code used fo
 
 ```text
 Rmd/
-  My_Visium.Rmd              Core Visium analysis, scores, and statistical tests
+  Visium_analyses.Rmd        Core Visium analysis, scores, and statistical tests
   Clean_plotting.Rmd         Main-figure code
   Supple_plotting.Rmd        Supplementary-figure code
 R/
@@ -35,7 +35,7 @@ VALIDATION_NOTES.md          Items that require author confirmation before archi
 3. Put Space Ranger outputs and the externally distributed processed objects in the locations described in `data/README.md`.
 4. Edit `config/sample_manifest.csv` only if the local data paths differ.
 5. Run stLearn and Cell2location independently as described in `python/README.md`, or supply their archived output files.
-6. Run `Rmd/My_Visium.Rmd` from the repository root. SenePy is selected through reticulate from the `adenoma-senepy` environment; stLearn and Cell2location results are imported from `data/derived/`.
+6. Run `Rmd/Visium_analyses.Rmd` from the repository root. SenePy is selected through reticulate from the `adenoma-senepy` environment; stLearn and Cell2location results are imported from `data/derived/`. To reconstruct `visium_semla.qs` from `combined_final` and the Space Ranger files, render with the parameter `rebuild_staffli: true`.
 7. Render `Rmd/Clean_plotting.Rmd` and `Rmd/Supple_plotting.Rmd` after the derived objects have been generated.
 
 The notebooks use project-relative paths and never require the original analyst's home directory.

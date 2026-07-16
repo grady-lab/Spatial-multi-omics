@@ -40,6 +40,8 @@ Imports:
     ggplot2,
     patchwork,
     ggpubr,
+    ggvenn,
+    mgcv,
     dittoSeq,
     here,
     rmarkdown,

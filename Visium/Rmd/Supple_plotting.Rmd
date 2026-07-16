@@ -99,23 +99,73 @@ s5 <- FeaturePlot(combined_final, reduction = "wnn.umap", features = cell_types,
 save_plot(s5, file.path(figure_dir, "SFigure_cell2location.pdf"), 11, 7)
 ```
 
-# Luminal-surface distance
+# Adenoma radial distance from the tract surface
 
 ```{r surface-distance}
 stem_distance <- read_csv(here("results", "tables", "surface_distance_stemness.csv"), show_col_types = FALSE)
 senescence_distance <- read_csv(here("results", "tables", "surface_distance_senescence.csv"), show_col_types = FALSE)
-distance_data <- bind_rows(
-  mutate(stem_distance, score = "Stemness"),
-  mutate(senescence_distance, score = "Senescence")
+distance_colors <- c(
+  Normal = unname(region_colors[["Normal"]]),
+  Adenoma = unname(region_colors[["Low-grade"]])
 )
-s6 <- ggplot(distance_data, aes(distance_bin_um, mean_score, color = Adenoma)) +
-  geom_point(aes(size = n_spots), alpha = 0.7) +
-  geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs"), se = TRUE) +
-  facet_wrap(~score, scales = "free_y", ncol = 1) +
-  scale_color_manual(values = region_colors) +
-  theme_classic() +
-  labs(x = "Distance from luminal surface (micrometers)", y = "Mean score per 100-micrometer bin")
-save_plot(s6, file.path(figure_dir, "SFigure_surface_distance.pdf"), 6, 8)
+
+p_stem <- ggplot(stem_distance, aes(distance_bin_um, mean_score, color = Adenoma)) +
+  geom_point(aes(size = n_spots), alpha = 0.8) +
+  geom_smooth(
+    method = "gam",
+    formula = y ~ s(x, bs = "cs"),
+    se = TRUE,
+    linewidth = 1
+  ) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  scale_color_manual(values = distance_colors) +
+  ggpubr::theme_pubr() +
+  labs(
+    x = "Distance from tract surface (micrometers)",
+    y = "Mean stemness score per 100-micrometer bin",
+    size = "N spots"
+  )
+
+p_senescence <- ggplot(senescence_distance, aes(distance_bin_um, mean_score, color = Adenoma)) +
+  geom_point(aes(size = n_spots), alpha = 0.8) +
+  geom_smooth(
+    method = "gam",
+    formula = y ~ s(x, bs = "cs"),
+    se = TRUE,
+    linewidth = 1
+  ) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  scale_color_manual(values = distance_colors) +
+  ggpubr::theme_pubr() +
+  labs(
+    x = "Distance from tract surface (micrometers)",
+    y = "Mean senescence score per 100-micrometer bin",
+    size = "N spots"
+  )
+
+s6 <- (p_senescence / p_stem) & coord_cartesian(xlim = c(0, 825))
+save_plot(s6, file.path(figure_dir, "SFigure_surface_distance.pdf"), 4, 8)
+```
+
+```{r surface-distance-example}
+surface_spots <- read_csv(
+  here("results", "tables", "surface_distance_spots.csv"),
+  show_col_types = FALSE
+)
+distance_index <- match(colnames(combined_final), surface_spots$barcode)
+combined_final$tract_surface_depth_um <- surface_spots$tract_surface_depth_um[distance_index]
+
+surface_example <- SpatialFeaturePlot(
+  combined_final,
+  features = "tract_surface_depth_um",
+  images = c("R4_large_1", "R4_large_2")
+)
+save_plot(
+  surface_example,
+  file.path(figure_dir, "SFigure_surface_distance_example.pdf"),
+  6,
+  4
+)
 ```
 
 # Public single-cell validation
@@ -146,4 +196,235 @@ s8 <- ggplot(cluster_summary, aes(combined_cluster, Senepy, group = Sample_ID, f
   theme_classic() +
   labs(x = "Cluster", y = "Per-sample median SenePy score")
 save_plot(s8, file.path(figure_dir, "SFigure_cluster_senescence.pdf"), 5, 4)
+```
+
+# Supplementary Figure 7A: sample-level GDF15 validation
+
+```{r gdf15-sample-validation-advancement}
+combined_final_epi = subset(combined_final, idents = c(2,4))
+meta_adv <- combined_final_epi@meta.data |>
+  tibble::rownames_to_column("Barcode") |>
+  dplyr::filter(
+    combined_cluster %in% c("2", "4")
+  )
+
+gdf15_adv_sample <- FetchData(
+  combined_final_epi,
+  vars = c("GDF15", "Sample_ID", "LargeSmall", "combined_cluster")
+) |>
+  tibble::rownames_to_column("Barcode") |>
+  dplyr::filter(
+    combined_cluster %in% c("2", "4"),
+    !is.na(LargeSmall)
+  ) |>
+  dplyr::group_by(Sample_ID, LargeSmall) |>
+  dplyr::summarise(
+    mean_GDF15 = mean(GDF15, na.rm = TRUE),
+    median_GDF15 = median(GDF15, na.rm = TRUE),
+    n_spots = dplyr::n(),
+    .groups = "drop"
+  )
+
+gdf15_adv_sample <- gdf15_adv_sample |>
+  mutate(
+    LargeSmall = factor(LargeSmall, levels = c("Small", "Large"))
+  )
+
+gdf15_adv_test <- wilcox.test(
+  mean_GDF15 ~ LargeSmall,
+  data = gdf15_adv_sample,
+  alternative = "two.sided",
+  exact = FALSE
+)
+
+gdf15_adv_test
+gdf15_adv_sample |>
+  group_by(LargeSmall) |>
+  summarise(
+    n_samples = n(),
+    median_of_sample_means = median(mean_GDF15),
+    .groups = "drop"
+  )
+
+
+gdf15_sample = ggpubr::ggboxplot(
+  gdf15_adv_sample,
+  x = "LargeSmall",
+  y = "mean_GDF15",
+  add = "point",
+  width = 0.6,
+  fill = "LargeSmall"
+) +
+  scale_fill_manual(values = size_colors) +
+  geom_line(aes(group = Sample_ID),
+            alpha = 0.25) +
+  ylab("Mean GDF15 expression") +
+  xlab(NULL)
+gdf15_sample
+
+
+```
+
+
+```{r gdf15-sample-validation-stemness}
+
+combined_final_epi@meta.data <- combined_final_epi@meta.data %>%
+  rownames_to_column("Barcodes") %>%
+  # dplyr::group_by(Sample_ID) %>%
+  dplyr::mutate(
+    q25 = quantile(Stem_Signature, 0.25, na.rm = TRUE),
+    q75 = quantile(Stem_Signature, 0.75, na.rm = TRUE),
+    StemGroup = dplyr::case_when(
+      Stem_Signature <= q25 ~ "Low",
+      Stem_Signature >= q75 ~ "High",
+      TRUE ~ "Mid"
+    )
+  ) %>%
+  # dplyr::ungroup() %>%
+  column_to_rownames("Barcodes")
+
+gdf15_stem_sample <- FetchData(
+  combined_final_epi,
+  vars = c("GDF15", "Sample_ID", "StemGroup")
+) |>
+  filter(StemGroup %in% c("High", "Low")) |>
+  group_by(Sample_ID, StemGroup) |>
+  summarise(
+    mean_GDF15 = mean(GDF15, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  tidyr::pivot_wider(
+    names_from = StemGroup,
+    values_from = mean_GDF15
+  ) |>
+  filter(!is.na(High), !is.na(Low))
+
+gdf15_stemtest = wilcox.test(
+  gdf15_stem_sample$High,
+  gdf15_stem_sample$Low,
+  paired = TRUE,
+  alternative = "two.sided"
+)
+gdf15_stemtest
+gdf15_stem_sample |>
+  summarise(
+    n_paired_samples = n(),
+    median_high = median(High),
+    median_low = median(Low),
+    median_paired_difference = median(High-Low)
+  )
+
+gdf15_stem = ggpubr::ggboxplot(
+  gdf15_stem_sample %>% pivot_longer(cols = c("High","Low"),names_to = "Stem_group",values_to = "GDF15") %>%
+    mutate(Stem_group = factor(Stem_group,levels = c("Low","High"))),
+  x = "Stem_group",
+  y = "GDF15",
+  add = "point",
+  width = 0.6,
+  fill = "Stem_group"
+) +
+  scale_fill_manual(values = c(Low = "#0652DD", High = "#ff5252")) +
+  geom_line(aes(group = Sample_ID),
+            alpha = 0.25) +
+  ylab("Mean GDF15 expression") +
+  xlab(NULL)
+gdf15_stem
+```
+
+
+
+```{r gdf15-sample-validation-senescence}
+combined_final_epi = subset(combined_final, subset = Adenoma != "Stroma")
+
+combined_final_epi@meta.data <- combined_final_epi@meta.data %>%
+  rownames_to_column("Barcodes") %>%
+  # dplyr::group_by(Sample_ID) %>%
+  dplyr::mutate(
+    cut_senepy = mean(Senepy) + 2*sd(Senepy),
+    Senepy_pos = dplyr::case_when(
+      Senepy <= cut_senepy ~ "No",
+      Senepy > cut_senepy ~ "Yes"
+    )
+  ) %>%
+  # dplyr::ungroup() %>%
+  column_to_rownames("Barcodes")
+
+
+gdf15_sene_sample <- FetchData(
+  combined_final_epi,
+  vars = c("GDF15", "Sample_ID", "Adenoma", "Senepy_pos")
+) |>
+  tibble::rownames_to_column("Barcode") |>
+  dplyr::filter(
+    Senepy_pos == "Yes",
+    Adenoma %in% c("Low-grade", "Normal")
+  ) |>
+  dplyr::group_by(Sample_ID, Adenoma) |>
+  dplyr::summarise(
+    mean_GDF15 = mean(GDF15, na.rm = TRUE),
+    median_GDF15 = median(GDF15, na.rm = TRUE),
+    n_spots = dplyr::n(),
+    .groups = "drop"
+  ) |>
+  tidyr::pivot_wider(
+    names_from = Adenoma,
+    values_from = c(mean_GDF15, median_GDF15, n_spots)
+  ) |>
+  dplyr::filter(
+    !is.na(`mean_GDF15_Low-grade`),
+    !is.na(mean_GDF15_Normal)
+  ) |>
+  dplyr::mutate(
+    difference = `mean_GDF15_Low-grade` - mean_GDF15_Normal
+  )
+
+gdf15_sene_test <- wilcox.test(
+  gdf15_sene_sample$`mean_GDF15_Low-grade`,
+  gdf15_sene_sample$mean_GDF15_Normal,
+  paired = TRUE,
+  alternative = "two.sided",
+  exact = FALSE
+)
+
+gdf15_sene_test
+
+gdf15_sene_sample |>
+  summarise(
+    n_paired_samples = n(),
+    median_adenoma = median(`mean_GDF15_Low-grade`),
+    median_normal = median(mean_GDF15_Normal),
+    median_paired_difference = median(difference)
+  )
+
+gdf15_sen = ggpubr::ggboxplot(
+  gdf15_sene_sample %>% pivot_longer(cols = c(`mean_GDF15_Low-grade`,"mean_GDF15_Normal"),names_to = "Sene_group",values_to = "GDF15") %>%
+    mutate(Sene_group = factor(Sene_group,levels = c("mean_GDF15_Normal","mean_GDF15_Low-grade"))),
+  x = "Sene_group",
+  y = "GDF15",
+  add = "point",
+  width = 0.6,
+  fill = "Sene_group"
+) +
+  scale_fill_manual(values = c(mean_GDF15_Normal = "#0652DD", `mean_GDF15_Low-grade` = "#ff5252")) +
+  geom_line(aes(group = Sample_ID),
+            alpha = 0.25) +
+  ylab("Mean GDF15 expression") +
+  xlab(NULL)
+gdf15_sen
+
+
+```
+
+
+```{r gdf15-sample-validation-summary}
+gdf15_adv_test
+gdf15_stemtest
+gdf15_sene_test
+
+save_plot(
+  gdf15_sample + gdf15_stem + gdf15_sen,
+  file.path(figure_dir, "SFigure7A_GDF15_sample_level_validation.pdf"),
+  6,
+  4
+)
 ```

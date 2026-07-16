@@ -7,7 +7,7 @@ params:
   execute: false
 ---
 
-This notebook contains the main-figure plotting code only. Statistical calculations are performed in `My_Visium.Rmd` and read here from saved tables.
+This notebook contains the main-figure plotting code only. Statistical calculations are performed in `Visium_analyses.Rmd` and read here from saved tables.
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE, eval = isTRUE(params$execute), message = FALSE, warning = FALSE)
@@ -129,6 +129,17 @@ p3d <- FeaturePlot(
 save_plot(p3d, file.path(figure_dir, "Figure3D_cytotrace.pdf"), 5, 4)
 ```
 
+```{r figure-3-gdf15-de-overlap}
+venn_data <- readRDS(here("results", "tables", "de_gdf15_venn.rds"))
+p3e <- ggvenn::ggvenn(
+  data = venn_data,
+  show_stats = "c",
+  set_name_size = 4,
+  fill_color = unname(cluster_colors[c("0", "6", "8")])
+)
+save_plot(p3e, file.path(figure_dir, "Figure3_GDF15_DE_overlap.pdf"), 4.5, 4.5)
+```
+
 # Figure 4: spatial associations and CD8 neighborhoods
 
 ```{r figure-4-partial-correlation}
@@ -169,18 +180,70 @@ save_plot(p4b, file.path(figure_dir, "Figure4B_local_moran_classes.pdf"), 5, 4)
 cd8_region <- read_csv(here("results", "tables", "cd8_density_region.csv"), show_col_types = FALSE)
 cd8_gdf15 <- read_csv(here("results", "tables", "cd8_density_gdf15_high_low.csv"), show_col_types = FALSE)
 
-p4c <- cd8_region |>
-  pivot_longer(c(Normal, Low_grade), names_to = "Region", values_to = "Density") |>
-  mutate(Region = recode(Region, Low_grade = "Low-grade")) |>
-  sample_level_boxplot("Region", "Density") +
-  ylab("CD8-positive neighbor fraction")
+cd8_region_long <- cd8_region |>
+  dplyr::select(Sample_ID, LargeSmall, dens_LGD, dens_Normal) |>
+  tidyr::pivot_longer(
+    cols = c(dens_LGD, dens_Normal),
+    names_to = "Region",
+    values_to = "Density"
+  ) |>
+  dplyr::mutate(
+    Region = dplyr::recode(.data$Region, dens_LGD = "LGD", dens_Normal = "Normal"),
+    Region = factor(.data$Region, levels = c("Normal", "LGD")),
+    LargeSmall = factor(.data$LargeSmall, levels = c("Small", "Large"))
+  )
 
-p4d <- cd8_gdf15 |>
-  pivot_longer(c(GDF15_low, GDF15_high), names_to = "GDF15", values_to = "Density") |>
-  mutate(GDF15 = recode(GDF15, GDF15_low = "Low", GDF15_high = "High")) |>
-  sample_level_boxplot("GDF15", "Density") +
-  facet_wrap(~Adenoma) + ylab("CD8-positive neighbor fraction")
+p4c <- ggpubr::ggboxplot(
+  cd8_region_long,
+  x = "Region",
+  y = "Density",
+  facet.by = "LargeSmall",
+  add = "jitter",
+  width = 0.6,
+  fill = "Region"
+) +
+  scale_fill_manual(
+    values = c(Normal = region_colors[["Normal"]], LGD = region_colors[["Low-grade"]])
+  ) +
+  geom_line(aes(group = Sample_ID), alpha = 0.25) +
+  ylab("CD8 T cell density around GDF15-high spots") +
+  xlab(NULL) +
+  ggpubr::stat_compare_means(method = "wilcox.test", paired = TRUE, label = "p.format")
+
+cd8_gdf15_long <- cd8_gdf15 |>
+  dplyr::filter(!is.na(.data$dens_High), !is.na(.data$dens_Low)) |>
+  dplyr::select(
+    Sample_ID,
+    LargeSmall,
+    Adenoma,
+    dens_Low,
+    dens_High
+  ) |>
+  tidyr::pivot_longer(
+    cols = c(dens_Low, dens_High),
+    names_to = "GDF15",
+    values_to = "Density"
+  ) |>
+  dplyr::mutate(
+    GDF15 = dplyr::recode(.data$GDF15, dens_Low = "GDF15-Low", dens_High = "GDF15-High"),
+    GDF15 = factor(.data$GDF15, levels = c("GDF15-Low", "GDF15-High"))
+  )
+
+p4d <- ggpubr::ggboxplot(
+  cd8_gdf15_long,
+  x = "GDF15",
+  y = "Density",
+  facet.by = "Adenoma",
+  add = "jitter",
+  width = 0.6,
+  fill = "GDF15"
+) +
+  scale_fill_manual(values = c("GDF15-Low" = "#0652DD", "GDF15-High" = "#ff5252")) +
+  geom_line(aes(group = Sample_ID), alpha = 0.25) +
+  xlab(NULL) +
+  ylab("CD8 neighborhood density") +
+  ggpubr::stat_compare_means(method = "wilcox.test", paired = TRUE, label = "p.format")
 
 save_plot(p4c, file.path(figure_dir, "Figure4C_CD8_region.pdf"), 4, 4)
-save_plot(p4d, file.path(figure_dir, "Figure4D_CD8_GDF15.pdf"), 7, 4)
+save_plot(p4d, file.path(figure_dir, "Figure4D_CD8_GDF15.pdf"), 4, 4)
 ```

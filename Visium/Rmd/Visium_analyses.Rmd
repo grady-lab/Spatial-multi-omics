@@ -7,6 +7,7 @@ output:
 params:
   execute: false
   run_preprocessing: false
+  rebuild_staffli: false
   cores: 1
 editor_options:
   chunk_output_type: console
@@ -215,61 +216,110 @@ combined_final <- AddMetaData(
 )
 ```
 
-# Differential expression
+# Differential expression and GDF15 candidate prioritization
 
-All three tests use dysplastic clusters C2 and C4 where specified. Stemness cutoffs are the cohort-wide lower and upper quartiles across C2/C4; intermediate spots are removed. Senescence outliers use the cohort-wide definition above. Secreted genes are filtered after the pathologist-defined dysplastic-versus-normal test.
+This section follows the authoritative `DE analysis for GDF15` chunk in the working analysis notebook. All three contrasts retain only positive markers with a minimum detection-fraction difference of 0.10 and a log-fold-change threshold of 0.2. Advancement and stemness are tested within dysplastic clusters C2 and C4. Stemness cutoffs are the cohort-wide lower and upper quartiles across C2/C4. The senescence cutoff is the mean plus two standard deviations among non-stromal spots, followed by the pathologist-defined low-grade-versus-normal comparison. Candidate secreted genes must be positive in all three contrasts and present in the secretome reference.
 
-```{r differential-expression}
+```{r differential-expression-gdf15}
 DefaultAssay(combined_final) <- "Spatial"
+combined_final <- JoinLayers(combined_final, assay = "Spatial")
 Idents(combined_final) <- factor(combined_final$combined_cluster)
 dysplastic <- subset(combined_final, idents = c("2", "4"))
+
+stem_cutoffs <- quantile(dysplastic$Stem_Signature, c(0.25, 0.75), na.rm = TRUE)
+dysplastic$StemGroup <- case_when(
+  dysplastic$Stem_Signature <= stem_cutoffs[[1]] ~ "Low",
+  dysplastic$Stem_Signature >= stem_cutoffs[[2]] ~ "High",
+  TRUE ~ "Mid"
+)
+
+de_stemness <- FindMarkers(
+  dysplastic,
+  group.by = "StemGroup",
+  ident.1 = "High",
+  ident.2 = "Low",
+  min.diff.pct = 0.10,
+  logfc.threshold = 0.2,
+  only.pos = TRUE
+)
 
 de_advanced <- FindMarkers(
   dysplastic,
   group.by = "LargeSmall",
   ident.1 = "Large",
   ident.2 = "Small",
-  logfc.threshold = 0,
-  min.pct = 0
+  min.diff.pct = 0.10,
+  logfc.threshold = 0.2,
+  only.pos = TRUE
 )
 
-stem_cutoffs <- quantile(dysplastic$Stem_Signature, c(0.25, 0.75), na.rm = TRUE)
-dysplastic$StemGroup <- case_when(
-  dysplastic$Stem_Signature <= stem_cutoffs[[1]] ~ "Low",
-  dysplastic$Stem_Signature >= stem_cutoffs[[2]] ~ "High",
-  TRUE ~ "Intermediate"
+non_stromal <- subset(combined_final, subset = Adenoma != "Stroma")
+senepy_cutoff <- mean(non_stromal$Senepy) + 2 * sd(non_stromal$Senepy)
+non_stromal$Senepy_pos <- case_when(
+  non_stromal$Senepy <= senepy_cutoff ~ "No",
+  non_stromal$Senepy > senepy_cutoff ~ "Yes"
 )
-de_stemness <- FindMarkers(
-  subset(dysplastic, subset = StemGroup != "Intermediate"),
-  group.by = "StemGroup",
-  ident.1 = "High",
-  ident.2 = "Low",
-  logfc.threshold = 0,
-  min.pct = 0
-)
+senescent_non_stromal <- subset(non_stromal, subset = Senepy_pos == "Yes")
 
-senescent_epithelial <- subset(
-  combined_final,
-  cells = colnames(combined_final)[
-    combined_final$SenePyhigh &
-      combined_final$combined_cluster %in% epithelial_clusters &
-      combined_final$Adenoma %in% c("Normal", "Low-grade")
-  ]
-)
 de_senescence_region <- FindMarkers(
-  senescent_epithelial,
+  senescent_non_stromal,
   group.by = "Adenoma",
   ident.1 = "Low-grade",
   ident.2 = "Normal",
-  logfc.threshold = 0,
-  min.pct = 0
+  min.diff.pct = 0.10,
+  logfc.threshold = 0.2,
+  only.pos = TRUE
 )
-secreted <- read_tsv(here("data", "reference", "secreted_genes.tsv"), show_col_types = FALSE)$Gene
-de_senescence_secreted <- de_senescence_region[rownames(de_senescence_region) %in% secreted, , drop = FALSE]
+
+secreted <- read_tsv(
+  here("data", "reference", "secreted_genes.tsv"),
+  show_col_types = FALSE
+)$Gene
+
+shared_de_genes <- Reduce(
+  intersect,
+  list(
+    rownames(de_advanced),
+    rownames(de_stemness),
+    rownames(de_senescence_region)
+  )
+)
+candidate_secreted <- shared_de_genes[shared_de_genes %in% secreted]
+
+de_senescence_secreted <- de_senescence_region[
+  rownames(de_senescence_region) %in% secreted,
+  ,
+  drop = FALSE
+]
+
+venn_data <- list(
+  `Large vs Small` = rownames(de_advanced),
+  `Stem-high vs Stem-low` = rownames(de_stemness),
+  `Sene-Adenoma vs Sene-Normal` = rownames(de_senescence_secreted)
+)
+
+gdf15_de <- bind_rows(
+  rownames_to_column(de_advanced, "gene") |>
+    filter(gene == "GDF15") |>
+    mutate(comparison = "Large vs Small"),
+  rownames_to_column(de_stemness, "gene") |>
+    filter(gene == "GDF15") |>
+    mutate(comparison = "Stem-high vs Stem-low"),
+  rownames_to_column(de_senescence_region, "gene") |>
+    filter(gene == "GDF15") |>
+    mutate(comparison = "Sene-Adenoma vs Sene-Normal")
+)
 
 write_csv(rownames_to_column(de_advanced, "gene"), here("results", "tables", "de_advanced_vs_nonadvanced.csv"))
 write_csv(rownames_to_column(de_stemness, "gene"), here("results", "tables", "de_stemness_high_vs_low.csv"))
+write_csv(rownames_to_column(de_senescence_region, "gene"), here("results", "tables", "de_senescence_low_grade_vs_normal.csv"))
 write_csv(rownames_to_column(de_senescence_secreted, "gene"), here("results", "tables", "de_senescence_secreted.csv"))
+write_csv(tibble(gene = candidate_secreted), here("results", "tables", "de_three_way_secreted_candidates.csv"))
+write_csv(gdf15_de, here("results", "tables", "de_gdf15_three_comparisons.csv"))
+saveRDS(venn_data, here("results", "tables", "de_gdf15_venn.rds"))
+
+candidate_secreted
+gdf15_de
 ```
 
 # Bivariate local Moran's I
@@ -348,8 +398,13 @@ write_csv(partial_spatial_test$table, here("results", "tables", "partial_spatial
 
 # CD8 neighborhood analysis
 
+This section reproduces the active analysis under `# CD8 Spatial distance` in the working `My_Visium.Rmd`. The public assay `ADT_dsb` is the within-slide DSB-normalized assay named `ADT_dsb_by_slide` in the source notebook. GDF15 and the composite CD8 gate are standardized across all ADT-complete spots within each sample before restricting to normal and low-grade epithelial clusters C0, C1, C2, C3, C4, C6, and C8. CD8-positive spots require z-scored CD3E and CD8A of at least 0.5 and the maximum z-scored CD45RA/CD45RO value of at least zero. Epithelial tissue components use a 1.6-spot-unit connection radius, and CD8 density is measured within a two-spot-unit ring in the same component. The first comparison uses at least five GDF15-high source spots per pathology region; the second uses at least ten GDF15-high or GDF15-low source spots per region and excludes pilot samples. The exploratory nearest-distance calculation is commented out in the source, so the two reported outputs reproduce the active ring-density analyses.
+
 ```{r cd8-neighborhood}
-cd8_data <- prepare_cd8_neighborhood_data(combined_final)
+cd8_data <- prepare_cd8_neighborhood_data(
+  combined_final,
+  adt_assay = "ADT_dsb"
+)
 cd8_region <- cd8_density_by_source(
   cd8_data,
   comparison = "region",
@@ -363,41 +418,104 @@ cd8_gdf15 <- cd8_density_by_source(
   min_sources = 10
 )
 
-cd8_region_test <- wilcox.test(cd8_region$Low_grade, cd8_region$Normal, paired = TRUE, exact = FALSE)
+cd8_region_test <- cd8_region |>
+  dplyr::filter(!is.na(.data$dens_LGD), !is.na(.data$dens_Normal)) |>
+  dplyr::group_by(.data$LargeSmall) |>
+  dplyr::summarise(
+    n_pairs = dplyr::n(),
+    p_value = stats::wilcox.test(.data$dens_LGD, .data$dens_Normal, paired = TRUE)$p.value,
+    median_difference = stats::median(.data$delta_dens),
+    .groups = "drop"
+  )
 cd8_gdf15_test <- cd8_gdf15 |>
-  group_by(Adenoma) |>
-  summarise(
-    n_samples = sum(complete.cases(GDF15_high, GDF15_low)),
-    p_value = wilcox.test(GDF15_high, GDF15_low, paired = TRUE, exact = FALSE)$p.value,
-    median_difference = median(GDF15_high - GDF15_low, na.rm = TRUE),
+  dplyr::filter(!is.na(.data$dens_High), !is.na(.data$dens_Low)) |>
+  dplyr::group_by(.data$Adenoma) |>
+  dplyr::summarise(
+    n_pairs = dplyr::n(),
+    p_value = stats::wilcox.test(.data$dens_High, .data$dens_Low, paired = TRUE)$p.value,
+    median_difference = stats::median(.data$delta_HL),
     .groups = "drop"
   )
 write_csv(cd8_region, here("results", "tables", "cd8_density_region.csv"))
 write_csv(cd8_gdf15, here("results", "tables", "cd8_density_gdf15_high_low.csv"))
+write_csv(cd8_region_test, here("results", "tables", "cd8_density_region_tests.csv"))
+write_csv(cd8_gdf15_test, here("results", "tables", "cd8_density_gdf15_high_low_tests.csv"))
 ```
 
-# Luminal-surface distance
+# Adenoma radial distance from the tract surface
 
-```{r luminal-distance}
+This section reconstructs `combined_final_semla` from `combined_final` and the Space Ranger coordinates, scale factors, and H&E images when `rebuild_staffli: true`. Only the object-construction steps required by the final analysis are retained; exploratory Staffli subsetting and viewer diagnostics are omitted. Manual annotations exported from the semla viewer use `All` for tract-surface anchors and `Island` for tissue pieces that were excluded. The distance is calculated within each semla-connected tissue component after removing `Island` annotations and singleton components. In the final plotting pipeline, surface anchors and spots within the first 100 micrometers are excluded from the summaries; remaining spots are grouped into 100-micrometer bins, and bins with fewer than five spots are removed.
+
+```{r tract-surface-distance}
 surface_annotations <- read_csv(
   here("data", "reference", "luminal_surface_annotations.csv"),
   show_col_types = FALSE
 )
-surface_object <- qs::qread(here("data", "derived", "visium_semla.qs"))
+assert_columns(surface_annotations, c("sample_id", "barcode", "surface_label"))
+
+if (isTRUE(params$rebuild_staffli)) {
+  surface_object <- build_staffli_from_spaceranger(
+    combined_final,
+    manifest,
+    image_height = 300
+  )
+  qs::qsave(
+    surface_object,
+    here("data", "derived", "visium_semla.qs"),
+    preset = "high"
+  )
+} else {
+  surface_object <- qs::qread(here("data", "derived", "visium_semla.qs"))
+}
+
 surface_object <- separate_tissue_islands_semla(surface_object)
 staffli_coordinates <- surface_object@tools$Staffli@meta_data |>
   as_tibble() |>
   select(barcode, pxl_col_in_fullres, pxl_row_in_fullres)
+
+surface_annotations <- surface_annotations |>
+  transmute(
+    sample_id = as.character(sample_id),
+    raw_barcode = barcode,
+    surface_label = case_when(
+      toupper(surface_label) == "ALL" ~ "All",
+      toupper(surface_label) == "ISLAND" ~ "Island",
+      TRUE ~ as.character(surface_label)
+    )
+  )
 surface_data <- surface_object@meta.data |>
   rownames_to_column("barcode") |>
   select(barcode, Sample_ID, Adenoma, tissue_island, Senepy, Stem_Signature) |>
+  mutate(raw_barcode = str_extract(barcode, "[ACGT]{16}-[0-9]+")) |>
   left_join(staffli_coordinates, by = "barcode") |>
-  left_join(surface_annotations, by = c("Sample_ID" = "sample_id", "barcode"))
-surface_distance <- distance_to_surface(surface_data, surface_col = "surface")
-surface_data <- left_join(surface_data, surface_distance, by = c("Sample_ID", "tissue_island", "barcode"))
+  left_join(
+    surface_annotations,
+    by = c("Sample_ID" = "sample_id", "raw_barcode")
+  ) |>
+  mutate(
+    surface_label = replace_na(surface_label, "Other"),
+    Adenoma = recode(as.character(Adenoma), `Low-grade` = "Adenoma", `2` = "Normal")
+  ) |>
+  filter(
+    surface_label != "Island",
+    !tolower(tissue_island) %in% c("singleton", "singletons")
+  )
 
-stem_distance_bins <- summarize_distance_bins(surface_data, score = "Stem_Signature")
-senescence_distance_bins <- summarize_distance_bins(surface_data, score = "Senepy")
+surface_distance <- distance_to_surface(
+  surface_data,
+  surface_col = "surface_label",
+  surface_value = "All"
+)
+surface_data <- left_join(
+  surface_data,
+  surface_distance,
+  by = c("Sample_ID", "tissue_island", "barcode")
+)
+
+write_csv(surface_data, here("results", "tables", "surface_distance_spots.csv"))
+surface_analysis_data <- filter(surface_data, Adenoma != "Stroma")
+stem_distance_bins <- summarize_distance_bins(surface_analysis_data, score = "Stem_Signature")
+senescence_distance_bins <- summarize_distance_bins(surface_analysis_data, score = "Senepy")
 write_csv(stem_distance_bins, here("results", "tables", "surface_distance_stemness.csv"))
 write_csv(senescence_distance_bins, here("results", "tables", "surface_distance_senescence.csv"))
 ```

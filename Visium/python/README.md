@@ -1,6 +1,6 @@
 # Independent Python workflows
 
-stLearn pseudotime and Cell2location deconvolution were run independently in Python/JupyterLab. They are not launched from `Rmd/My_Visium.Rmd`; the R workflow only imports their output files.
+stLearn pseudotime and Cell2location deconvolution were run independently in Python/JupyterLab. They are not launched from `Rmd/Visium_analyses.Rmd`; the R workflow only imports their output files.
 
 The compact scripts in this directory preserve the original analysis workflows while replacing analyst-specific paths with command-line arguments:
 

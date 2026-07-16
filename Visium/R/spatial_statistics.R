@@ -200,40 +200,58 @@ prepare_cd8_neighborhood_data <- function(
     cd45ra = "ADT-PTPRC",
     cd45ro = "ADT-PTPRC.2"
 ) {
-  variables <- c(gdf15, cd3, cd8, cd45ra, cd45ro)
   df <- spatial_metadata(object)
   df[[gdf15]] <- extract_feature(object, gdf15, assay = rna_assay)[df$barcode]
+
+  adt_object <- SeuratObject::JoinLayers(object, assay = adt_assay)
   for (feature in c(cd3, cd8, cd45ra, cd45ro)) {
-    df[[feature]] <- extract_feature(object, feature, assay = adt_assay)[df$barcode]
+    df[[feature]] <- extract_feature(adt_object, feature, assay = adt_assay)[df$barcode]
   }
+
   df <- df |>
     dplyr::filter(
-      .data$Adenoma %in% c("Normal", "Low-grade"),
-      as.character(.data$combined_cluster) %in% epithelial_clusters
+      dplyr::if_all(
+        dplyr::all_of(c(gdf15, cd3, cd8, cd45ra, cd45ro)),
+        is.finite
+      )
     ) |>
     dplyr::group_by(.data$Sample_ID) |>
     dplyr::mutate(
-      z_gdf15 = .zscore(.data[[gdf15]]),
-      z_cd3 = .zscore(.data[[cd3]]),
-      z_cd8 = .zscore(.data[[cd8]]),
-      z_cd45 = pmax(.zscore(.data[[cd45ra]]), .zscore(.data[[cd45ro]]), na.rm = TRUE),
-      CD8_positive = .data$z_cd3 >= 0.5 & .data$z_cd8 >= 0.5 & .data$z_cd45 >= 0
+      z_GDF15 = .zscore(.data[[gdf15]]),
+      z_CD3E = .zscore(.data[[cd3]]),
+      z_CD8A = .zscore(.data[[cd8]]),
+      z_PTPRC = pmax(.zscore(.data[[cd45ra]]), .zscore(.data[[cd45ro]]), na.rm = TRUE),
+      CD8T = .data$z_CD3E >= 0.5 & .data$z_CD8A >= 0.5 & .data$z_PTPRC >= 0
+    ) |>
+    dplyr::ungroup() |>
+    dplyr::group_by(.data$Sample_ID, .data$Adenoma) |>
+    dplyr::mutate(
+      GDF15_hi = .data$z_GDF15 > stats::median(.data$z_GDF15, na.rm = TRUE)
     ) |>
     dplyr::ungroup() |>
     dplyr::filter(
-      is.finite(.data$z_cd3),
-      is.finite(.data$z_cd8),
-      is.finite(.data$z_cd45)
-    ) |>
+      .data$Adenoma %in% c("Normal", "Low-grade"),
+      as.character(.data$combined_cluster) %in% epithelial_clusters,
+      is.finite(.data$z_CD3E),
+      is.finite(.data$z_CD8A),
+      is.finite(.data$z_PTPRC)
+    )
+
+  df <- add_tissue_components(df, radius_multiplier = 1.6, k = 6)
+  df |>
     dplyr::group_by(.data$Sample_ID, .data$Adenoma) |>
     dplyr::mutate(
-      GDF15_group = ifelse(.data[[gdf15]] > stats::median(.data[[gdf15]], na.rm = TRUE), "High", "Low")
+      median_z_GDF15 = stats::median(.data$z_GDF15, na.rm = TRUE),
+      GDF15_group = dplyr::case_when(
+        .data$z_GDF15 > .data$median_z_GDF15 ~ "High",
+        TRUE ~ "Low"
+      )
     ) |>
     dplyr::ungroup()
-  add_tissue_components(df)
 }
 
 .spot_spacing <- function(df, coord_cols = c("array_col", "array_row")) {
+  if (nrow(df) < 2) return(NA_real_)
   coordinates <- as.matrix(df[, coord_cols, drop = FALSE])
   stats::median(RANN::nn2(coordinates, coordinates, k = 2)$nn.dists[, 2], na.rm = TRUE)
 }
@@ -248,9 +266,13 @@ add_tissue_components <- function(
   data |>
     dplyr::group_by(.data[[sample_col]]) |>
     dplyr::group_modify(function(df, key) {
+      if (nrow(df) < 2) {
+        df$tissue_island <- seq_len(nrow(df))
+        return(df)
+      }
       coordinates <- as.matrix(df[, coord_cols, drop = FALSE])
       radius <- radius_multiplier * .spot_spacing(df, coord_cols)
-      nearest <- RANN::nn2(coordinates, coordinates, k = min(k + 1, nrow(df)))
+      nearest <- RANN::nn2(coordinates, coordinates, k = min(k, nrow(df)))
       edges <- lapply(seq_len(nrow(df)), function(i) {
         index <- nearest$nn.idx[i, -1]
         distance <- nearest$nn.dists[i, -1]
@@ -281,31 +303,67 @@ add_tissue_components <- function(
     radius_multiplier = 2,
     coord_cols = c("array_col", "array_row"),
     island_col = "tissue_island",
-    target_col = "CD8_positive",
-    min_sources = 5
+    target_col = "CD8T",
+    min_sources = 5,
+    min_component_size = 5
 ) {
+  source <- !is.na(source) & as.logical(source)
   source_df <- df[source, , drop = FALSE]
-  if (nrow(source_df) < min_sources) return(NA_real_)
+  empty_result <- list(
+    value = NA_real_,
+    n_src_total = nrow(source_df),
+    n_src_used = 0L,
+    n_tgt = sum(!is.na(df[[target_col]]) & as.logical(df[[target_col]]))
+  )
+  if (nrow(source_df) < min_sources) return(empty_result)
+
   radius <- radius_multiplier * .spot_spacing(df, coord_cols)
+  if (!is.finite(radius)) return(empty_result)
   density <- rep(NA_real_, nrow(source_df))
 
-  for (i in seq_len(nrow(source_df))) {
-    candidates <- df[df[[island_col]] == source_df[[island_col]][i], , drop = FALSE]
-    delta <- sweep(as.matrix(candidates[, coord_cols, drop = FALSE]), 2,
-                   as.numeric(source_df[i, coord_cols]), "-")
-    nearby <- rowSums(delta^2) <= radius^2
-    same_spot <- candidates$barcode == source_df$barcode[i]
-    nearby <- nearby & !same_spot
-    if (sum(nearby)) density[i] <- mean(candidates[[target_col]][nearby], na.rm = TRUE)
+  for (component in unique(source_df[[island_col]])) {
+    source_component <- source_df[source_df[[island_col]] == component, , drop = FALSE]
+    candidates <- df[df[[island_col]] == component, , drop = FALSE]
+    if (nrow(candidates) < min_component_size) next
+
+    source_coordinates <- as.matrix(source_component[, coord_cols, drop = FALSE])
+    candidate_coordinates <- as.matrix(candidates[, coord_cols, drop = FALSE])
+    delta_x <- outer(source_coordinates[, 1], candidate_coordinates[, 1], "-")
+    delta_y <- outer(source_coordinates[, 2], candidate_coordinates[, 2], "-")
+    distances <- sqrt(delta_x^2 + delta_y^2)
+
+    nearby_count <- rowSums(distances <= radius) - 1L
+    cd8_candidates <- !is.na(candidates[[target_col]]) & as.logical(candidates[[target_col]])
+    if (any(cd8_candidates)) {
+      cd8_coordinates <- candidate_coordinates[cd8_candidates, , drop = FALSE]
+      cd8_delta_x <- outer(source_coordinates[, 1], cd8_coordinates[, 1], "-")
+      cd8_delta_y <- outer(source_coordinates[, 2], cd8_coordinates[, 2], "-")
+      cd8_distances <- sqrt(cd8_delta_x^2 + cd8_delta_y^2)
+      cd8_count <- rowSums(cd8_distances <= radius)
+      cd8_count <- cd8_count - as.integer(source_component[[target_col]] %in% TRUE)
+    } else {
+      cd8_count <- rep(0L, nrow(source_component))
+    }
+
+    component_density <- ifelse(nearby_count > 0, cd8_count / nearby_count, NA_real_)
+    density[source_df[[island_col]] == component] <- component_density
   }
-  mean(density, na.rm = TRUE)
+
+  if (!any(is.finite(density))) return(empty_result)
+  list(
+    value = mean(density, na.rm = TRUE),
+    n_src_total = nrow(source_df),
+    n_src_used = sum(is.finite(density)),
+    n_tgt = empty_result$n_tgt
+  )
 }
 
 cd8_density_by_source <- function(
     data,
     comparison = c("region", "gdf15"),
     radius_multiplier = 2,
-    min_sources = 5
+    min_sources = 5,
+    exclude_sample_pattern = "Pilot"
 ) {
   comparison <- match.arg(comparison)
   if (comparison == "region") {
@@ -313,15 +371,29 @@ cd8_density_by_source <- function(
       data |>
         dplyr::group_by(.data$Sample_ID, .data$LargeSmall) |>
         dplyr::group_modify(function(df, key) {
+          low_grade <- .source_neighborhood_density(
+            df,
+            df$Adenoma == "Low-grade" & df$GDF15_hi,
+            radius_multiplier = radius_multiplier,
+            min_sources = min_sources,
+            min_component_size = 5
+          )
+          normal <- .source_neighborhood_density(
+            df,
+            df$Adenoma == "Normal" & df$GDF15_hi,
+            radius_multiplier = radius_multiplier,
+            min_sources = min_sources,
+            min_component_size = 5
+          )
           tibble::tibble(
-            Normal = .source_neighborhood_density(
-              df, df$Adenoma == "Normal" & df$GDF15_group == "High",
-              radius_multiplier = radius_multiplier, min_sources = min_sources
-            ),
-            Low_grade = .source_neighborhood_density(
-              df, df$Adenoma == "Low-grade" & df$GDF15_group == "High",
-              radius_multiplier = radius_multiplier, min_sources = min_sources
-            )
+            dens_LGD = low_grade$value,
+            dens_Normal = normal$value,
+            delta_dens = low_grade$value - normal$value,
+            n_src_LGD = low_grade$n_src_total,
+            n_src_LGD_used = low_grade$n_src_used,
+            n_src_Normal = normal$n_src_total,
+            n_src_Normal_used = normal$n_src_used,
+            n_tgt_epi = max(low_grade$n_tgt, normal$n_tgt)
           )
         }) |>
         dplyr::ungroup()
@@ -329,25 +401,181 @@ cd8_density_by_source <- function(
   }
 
   data |>
+    dplyr::filter(!grepl(exclude_sample_pattern, .data$Sample_ID)) |>
     dplyr::group_by(.data$Sample_ID, .data$LargeSmall, .data$Adenoma) |>
     dplyr::group_modify(function(df, key) {
+      high <- .source_neighborhood_density(
+        df,
+        df$GDF15_group == "High",
+        radius_multiplier = radius_multiplier,
+        min_sources = min_sources,
+        min_component_size = 3
+      )
+      low <- .source_neighborhood_density(
+        df,
+        df$GDF15_group == "Low",
+        radius_multiplier = radius_multiplier,
+        min_sources = min_sources,
+        min_component_size = 3
+      )
       tibble::tibble(
-        GDF15_low = .source_neighborhood_density(
-          df, df$GDF15_group == "Low",
-          radius_multiplier = radius_multiplier, min_sources = min_sources
-        ),
-        GDF15_high = .source_neighborhood_density(
-          df, df$GDF15_group == "High",
-          radius_multiplier = radius_multiplier, min_sources = min_sources
-        )
+        dens_High = high$value,
+        dens_Low = low$value,
+        delta_HL = high$value - low$value
       )
     }) |>
     dplyr::ungroup()
 }
 
+.first_existing_file <- function(paths) {
+  matches <- paths[file.exists(paths)]
+  if (length(matches)) matches[[1]] else NA_character_
+}
+
+.read_spaceranger_coordinates <- function(path, sample_id) {
+  has_header <- grepl("^barcode", readLines(path, n = 1))
+  if (has_header) {
+    coordinates <- readr::read_csv(path, show_col_types = FALSE)
+  } else {
+    coordinates <- readr::read_csv(
+      path,
+      col_names = c(
+        "barcode", "in_tissue", "array_row", "array_col",
+        "pxl_row_in_fullres", "pxl_col_in_fullres"
+      ),
+      show_col_types = FALSE
+    )
+  }
+  dplyr::mutate(coordinates, Sample_ID = sample_id)
+}
+
+build_staffli_from_spaceranger <- function(
+    object,
+    manifest,
+    image_height = 300,
+    load_images = TRUE,
+    verbose = TRUE
+) {
+  assert_columns(object@meta.data, "Sample_ID")
+  assert_columns(manifest, c("sample_id", "space_ranger_outs"))
+
+  sample_order <- unique(as.character(object$Sample_ID))
+  inputs <- manifest |>
+    dplyr::filter(.data$sample_id %in% sample_order) |>
+    dplyr::distinct(.data$sample_id, .keep_all = TRUE) |>
+    dplyr::arrange(match(.data$sample_id, sample_order)) |>
+    dplyr::mutate(
+      spatial_dir = file.path(.data$space_ranger_outs, "spatial"),
+      coordinate_file = purrr::map_chr(
+        .data$spatial_dir,
+        ~ .first_existing_file(file.path(.x, c("tissue_positions.csv", "tissue_positions_list.csv")))
+      ),
+      image_file = purrr::map_chr(
+        .data$spatial_dir,
+        ~ .first_existing_file(file.path(
+          .x,
+          c(
+            "tissue_lowres_image.png", "tissue_hires_image.png",
+            "tissue_lowres_image.jpg", "tissue_hires_image.jpg"
+          )
+        ))
+      ),
+      scalefactor_file = file.path(.data$spatial_dir, "scalefactors_json.json")
+    )
+
+  missing_samples <- setdiff(sample_order, inputs$sample_id)
+  if (length(missing_samples)) {
+    stop("The manifest is missing samples in the Seurat object: ", paste(missing_samples, collapse = ", "))
+  }
+  required_files <- c(inputs$coordinate_file, inputs$image_file, inputs$scalefactor_file)
+  if (anyNA(required_files) || any(!file.exists(required_files))) {
+    stop("Staffli construction requires Space Ranger coordinates, an H&E image, and scalefactors for every sample")
+  }
+
+  raw_coordinates <- purrr::map2_dfr(
+    inputs$coordinate_file,
+    inputs$sample_id,
+    .read_spaceranger_coordinates
+  )
+  object_key <- object@meta.data |>
+    tibble::rownames_to_column("barcode") |>
+    dplyr::transmute(
+      barcode = .data$barcode,
+      Sample_ID = as.character(.data$Sample_ID),
+      raw_barcode = stringr::str_extract(.data$barcode, "[ACGT]{16}-[0-9]+")
+    )
+  if (anyNA(object_key$raw_barcode)) {
+    stop("Could not extract a raw 10x barcode from every Seurat spot name")
+  }
+
+  staffli_coordinates <- object_key |>
+    dplyr::left_join(
+      dplyr::rename(raw_coordinates, raw_barcode = barcode),
+      by = c("Sample_ID", "raw_barcode")
+    )
+  if (anyNA(staffli_coordinates$pxl_row_in_fullres) ||
+      anyNA(staffli_coordinates$pxl_col_in_fullres)) {
+    unmatched <- staffli_coordinates |>
+      dplyr::filter(is.na(.data$pxl_row_in_fullres) | is.na(.data$pxl_col_in_fullres)) |>
+      dplyr::count(.data$Sample_ID)
+    stop(
+      "Some Seurat spots could not be matched to Space Ranger coordinates:\n",
+      paste0(unmatched$Sample_ID, ": ", unmatched$n, collapse = "\n")
+    )
+  }
+
+  staffli_coordinates <- staffli_coordinates |>
+    dplyr::transmute(
+      barcode = .data$barcode,
+      x = .data$array_col,
+      y = .data$array_row,
+      pxl_col_in_fullres = .data$pxl_col_in_fullres,
+      pxl_row_in_fullres = .data$pxl_row_in_fullres,
+      sampleID = as.integer(match(.data$Sample_ID, inputs$sample_id)),
+      Sample_ID = .data$Sample_ID,
+      raw_barcode = .data$raw_barcode,
+      in_tissue = .data$in_tissue,
+      array_row = .data$array_row,
+      array_col = .data$array_col
+    )
+  staffli_coordinates <- staffli_coordinates[
+    match(colnames(object), staffli_coordinates$barcode),
+    ,
+    drop = FALSE
+  ]
+  stopifnot(identical(staffli_coordinates$barcode, colnames(object)))
+
+  image_info <- semla::LoadImageInfo(inputs$image_file)
+  scalefactors <- semla::LoadScaleFactors(inputs$scalefactor_file)
+  image_info <- semla::UpdateImageInfo(image_info, scalefactors)
+  if (nrow(image_info) != nrow(inputs) || nrow(scalefactors) != nrow(inputs)) {
+    stop("semla returned an unexpected number of image-information or scalefactor rows")
+  }
+  image_info$sampleID <- as.character(seq_len(nrow(inputs)))
+  scalefactors$sampleID <- as.character(seq_len(nrow(inputs)))
+
+  object@tools$Staffli <- semla::CreateStaffliObject(
+    imgs = inputs$image_file,
+    meta_data = tibble::as_tibble(staffli_coordinates),
+    image_info = image_info,
+    scalefactors = scalefactors
+  )
+  stopifnot(identical(object@tools$Staffli@meta_data$barcode, colnames(object)))
+
+  if (isTRUE(load_images)) {
+    object <- semla::LoadImages(
+      object,
+      image_height = image_height,
+      verbose = verbose
+    )
+  }
+  object
+}
+
 distance_to_surface <- function(
     data,
-    surface_col = "surface",
+    surface_col = "surface_label",
+    surface_value = "All",
     sample_col = "Sample_ID",
     island_col = "tissue_island",
     coord_cols = c("pxl_col_in_fullres", "pxl_row_in_fullres"),
@@ -358,15 +586,24 @@ distance_to_surface <- function(
     dplyr::group_by(.data[[sample_col]], .data[[island_col]]) |>
     dplyr::group_modify(function(df, key) {
       coordinates <- as.matrix(df[, coord_cols, drop = FALSE])
-      anchors <- as.logical(df[[surface_col]])
-      if (!any(anchors, na.rm = TRUE)) {
-        return(tibble::tibble(barcode = df$barcode, surface_distance_um = NA_real_))
+      anchors <- !is.na(df[[surface_col]]) & as.character(df[[surface_col]]) == surface_value
+      if (nrow(df) < 2 || !any(anchors)) {
+        return(tibble::tibble(
+          barcode = df$barcode,
+          tract_surface_depth_px = NA_real_,
+          tract_surface_depth_um = NA_real_,
+          spot_spacing_px = NA_real_,
+          n_surface_spots = sum(anchors)
+        ))
       }
       spacing_px <- stats::median(FNN::get.knn(coordinates, k = 1)$nn.dist[, 1], na.rm = TRUE)
       distance_px <- FNN::get.knnx(coordinates[anchors, , drop = FALSE], coordinates, k = 1)$nn.dist[, 1]
       tibble::tibble(
         barcode = df$barcode,
-        surface_distance_um = distance_px / spacing_px * visium_spacing_um
+        tract_surface_depth_px = distance_px,
+        tract_surface_depth_um = distance_px / spacing_px * visium_spacing_um,
+        spot_spacing_px = spacing_px,
+        n_surface_spots = sum(anchors)
       )
     }) |>
     dplyr::ungroup()
@@ -375,15 +612,24 @@ distance_to_surface <- function(
 summarize_distance_bins <- function(
     data,
     score,
-    distance_col = "surface_distance_um",
+    distance_col = "tract_surface_depth_um",
     group_col = "Adenoma",
-    surface_col = "surface",
+    surface_col = "surface_label",
+    surface_value = "All",
     bin_width = 100,
+    minimum_distance = 100,
     min_spots = 5
 ) {
+  assert_columns(data, c(score, distance_col, group_col, surface_col))
   data |>
-    dplyr::filter(!.data[[surface_col]], is.finite(.data[[distance_col]]), is.finite(.data[[score]])) |>
-    dplyr::mutate(distance_bin_um = floor(.data[[distance_col]] / bin_width) * bin_width + bin_width / 2) |>
+    dplyr::filter(
+      as.character(.data[[surface_col]]) != surface_value,
+      is.finite(.data[[distance_col]]),
+      .data[[distance_col]] > minimum_distance
+    ) |>
+    dplyr::mutate(
+      distance_bin_um = ceiling(.data[[distance_col]] / bin_width) * bin_width - bin_width / 2
+    ) |>
     dplyr::group_by(.data[[group_col]], .data$distance_bin_um) |>
     dplyr::summarise(
       mean_score = mean(.data[[score]], na.rm = TRUE),
@@ -400,6 +646,9 @@ separate_tissue_islands_semla <- function(object, roi_col = "tissue_roi") {
   }
   object[[roi_col]] <- "Tissue"
   object <- semla::DisconnectRegions(object, column_name = roi_col, selected_groups = "Tissue")
+  if (!"Tissue_split" %in% colnames(object@meta.data)) {
+    stop("semla::DisconnectRegions() did not create the expected Tissue_split metadata")
+  }
   object$tissue_island <- object$Tissue_split
   object
 }
