@@ -168,7 +168,7 @@ save_plot(
 )
 ```
 
-# Public single-cell validation
+# Independent public single-cell validation
 
 ```{r single-cell-validation}
 validation <- qread(here("data", "derived", "single_cell_validation.qs"))

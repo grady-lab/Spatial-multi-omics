@@ -21,6 +21,8 @@ Each input H5AD must contain raw expression, `Adenoma`, `combined_cluster`, `arr
 
 ## Cell2location
 
+The single-cell reference is constructed in R from `data/reference/marteau_TA_updated.qs` by the `build-scrna-reference` section of `Rmd/Visium_analyses.Rmd`. It contains 52,871 cells from 66 samples in the `Chen_2021_Cell` study, with 28 curated `my_annotation` labels. The resulting raw-count H5AD is written to `data/reference/scrna_reference.h5ad`. This curation is separate from the Lau discovery/validation analysis.
+
 ```bash
 conda run -n adenoma-cell2location python python/run_cell2location.py \
   --spatial data/derived/cell2location_input.h5ad \

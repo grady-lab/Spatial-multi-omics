@@ -19,7 +19,8 @@ Provide these files under `data/reference/`:
 - `pathology_annotations.csv`: columns `sample_id`, `barcode`, and `Adenoma`, where `Adenoma` is one of `Stroma`, `Normal`, or `Low-grade`.
 - `gene_sets.rds`: a named list containing at least `SenMayo`, `IEX`, and `Stem_Signature`.
 - `secreted_genes.tsv`: one gene symbol per row, with a `Gene` header.
-- `scrna_reference.h5ad`: raw-count curated adenoma single-cell reference for Cell2location, with `my_annotation` and `sample_id` in `obs`.
+- `marteau_TA_updated.qs`: integrated public TA single-cell Seurat object used to construct the Cell2location reference. Its metadata must include `study_pmid`, `study_id`, `sample_id`, `cell_type_fine`, `my_annotation`, `my_annotationV2`, `_index`, `nCount_RNA`, and `nFeature_RNA`.
+- `scrna_reference.h5ad`: raw-count curated adenoma single-cell reference for Cell2location, generated from `marteau_TA_updated.qs` by rendering `Rmd/Visium_analyses.Rmd` with `build_scrna_reference: true`. A prebuilt copy can be supplied when rebuilding the 9.7 GB H5AD is impractical.
 - `validation_discovery.qs` and `validation_validation.qs`: public adenoma scRNA-seq Seurat objects, if the validation analysis is rerun.
 - `luminal_surface_annotations.csv`: columns `sample_id`, raw 10x `barcode`, and `surface_label`. This is the de-identified export of the manual semla annotation: `All` marks tract-surface anchors and `Island` marks tissue pieces excluded from the analysis. Spots absent from the file are treated as unannotated tissue.
 
@@ -29,6 +30,7 @@ The pipeline writes or reads the following large files under `data/derived/`:
 
 - `visium_integrated.qs`: final Seurat object after multimodal integration and RNA-only mapping.
 - `visium_scored.qs`: final object after gene-set, SenePy, cell-cycle, pseudotime, and deconvolution metadata are added.
+- `marteau_cell2location_reference.qs`: curated 52,871-cell Marteau/Chen reference with the final 28 Cell2location annotations.
 - `epithelial_diffusion_map.qs`: epithelial subset with diffusion-map coordinates.
 - `cell2location_input.h5ad`: raw-count Visium input for Cell2location, with `sample_id` in `obs`.
 - `cell2location/cell2location_q05.csv`: 5th-percentile posterior cell-type abundance estimates imported from the independent Python workflow.
@@ -39,4 +41,4 @@ The pipeline writes or reads the following large files under `data/derived/`:
 
 The public data record should provide these processed objects when raw-data reruns are impractical.
 
-The released Cell2location script is a path-parameterized version of the authoritative analysis script `Data/Python/Deconv/run_cell2location.py`. The stLearn script was distilled from `Data/Python/h5ad_files/LoopforPseudotime.ipynb`. See `python/README.md`; neither Python workflow is launched from R.
+The reference curation in `R/scrna_reference.R` is a path-parameterized version of the final pipeline in `Scripts/Processing the marteau_TA.R`. The released Cell2location script is a path-parameterized version of the authoritative analysis script `Data/Python/Deconv/run_cell2location.py`. The stLearn script was distilled from `Data/Python/h5ad_files/LoopforPseudotime.ipynb`. See `python/README.md`; neither Python workflow is launched from R.

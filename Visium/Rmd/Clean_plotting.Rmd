@@ -61,9 +61,26 @@ rna_markers <- c(
   "COL3A1","DES","GREM1",        # stromal
   "TRAC","MS4A1", "PTPRC"        # immune
 )
+rna_marker_classes <- tibble::tibble(
+  features.plot = rna_markers,
+  class = c(
+    rep("Stemness", 7),
+    rep("Proliferation", 3),
+    rep("Senescence / stress", 5),
+    rep("Normal / differentiated epithelium", 5),
+    rep("Stromal", 3),
+    rep("Immune", 3)
+  )
+)
 DefaultAssay(combined_final) <- "Spatial"
-p2c_rna <- DotPlot(combined_final, features = rna_markers, group.by = "combined_cluster") +
-  RotatedAxis() + theme_classic() + labs(x = NULL, y = NULL)
+p2c_rna <- DotPlot_by_class_horizontal(
+  object = combined_final,
+  features = rna_markers,
+  feature_class = rna_marker_classes,
+  col.low = "#053061",
+  col.mid = "#F5F6F6",
+  col.high = "#67001F"
+)
 
 adt_markers <- c(
   "ADT-EPCAM", "ADT-PECAM1", "ADT-VIM", "ADT-ACTA2", "ADT-PTPRC",
@@ -121,9 +138,27 @@ p3c <- SpatialFeaturePlot(
 save_plot(p3c, file.path(figure_dir, "Figure3C_spatial_scores.pdf"), 10, 6)
 ```
 
-```{r figure-3-developmental-potential}
-p3d <- FeaturePlot(
+```{r figure-3-three-way-cell2location}
+p3c_three_way <- three_way_spatial_plot(
   combined_final,
+  features = c("Dysplastic_Epi", "CD8_T_cells", "Normal_Epi"),
+  images = "R4_large_1"
+)
+save_plot(
+  p3c_three_way,
+  file.path(figure_dir, "Figure3C_three_way_cell2location.pdf"),
+  6,
+  4
+)
+```
+
+```{r figure-3-developmental-potential}
+cytotrace_cells <- rownames(combined_final@meta.data)[
+  !is.na(combined_final$CytoTRACE2_Score)
+]
+cytotrace_epithelium <- subset(combined_final, cells = cytotrace_cells)
+p3d <- FeaturePlot(
+  cytotrace_epithelium,
   reduction = "wnn.umap",
   features = "CytoTRACE2_Score"
 ) + theme_void()
@@ -166,8 +201,8 @@ moran <- read_csv(
   show_col_types = FALSE
 )
 p4b <- ggplot(
-  filter(moran, local_bimoran_class != "Not significant"),
-  aes(local_bimoran_class, fill = local_bimoran_class)
+  filter(moran, Cluster_Moran_Senepy_Stem_Signature != "Not sig"),
+  aes(Cluster_Moran_Senepy_Stem_Signature, fill = Cluster_Moran_Senepy_Stem_Signature)
 ) +
   geom_bar() +
   scale_fill_manual(values = moran_colors) +

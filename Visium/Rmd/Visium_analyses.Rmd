@@ -7,8 +7,9 @@ output:
 params:
   execute: false
   run_preprocessing: false
+  build_scrna_reference: false
   rebuild_staffli: false
-  cores: 1
+  cores: 24
 editor_options:
   chunk_output_type: console
 ---
@@ -36,6 +37,7 @@ source(here("R", "preprocessing.R"))
 source(here("R", "scoring.R"))
 source(here("R", "Cal_senepy.R"))
 source(here("R", "spatial_statistics.R"))
+source(here("R", "scrna_reference.R"))
 source(here("R", "plotting.R"))
 
 set.seed(1)
@@ -109,6 +111,8 @@ Cluster names used throughout the paper were assigned by jointly reviewing these
 
 # Gene-set, senescence, cell-cycle, and developmental-potential scores
 
+CytoTRACE2 is run only on the predominantly epithelial clusters C0, C1, C2, C3, C4, and C6, matching the source analysis. The joined `Spatial` assay is copied to a conventional `RNA` assay, the object is reduced to that assay plus the existing WNN UMAP, and raw counts are supplied to CytoTRACE2. Scores are aligned back to the full object by barcode; excluded clusters remain `NA`.
+
 ```{r irgsea}
 gene_sets <- readRDS(here("data", "reference", "gene_sets.rds"))
 combined_final <- run_irgsea(
@@ -138,13 +142,23 @@ combined_final <- classify_senepy_outliers(
 )
 combined_final <- add_cell_cycle_scores(combined_final, assay = "Spatial")
 
-cytotrace <- run_cytotrace2(combined_final, assay = "Spatial", ncores = params$cores)
-combined_final$CytoTRACE2_Score <- cytotrace$CytoTRACE2_Score
+cytotrace_input <- prepare_cytotrace2_input(
+  combined_final,
+  clusters = c("0", "1", "2", "3", "4", "6"),
+  cluster_col = "combined_cluster",
+  source_assay = "Spatial",
+  output_assay = "RNA",
+  reduction = "wnn.umap"
+)
+cytotrace <- run_cytotrace2(cytotrace_input, assay = "RNA", ncores = params$cores)
+cytotrace_scores <- cytotrace@meta.data$CytoTRACE2_Score
+names(cytotrace_scores) <- rownames(cytotrace@meta.data)
+combined_final$CytoTRACE2_Score <- cytotrace_scores[colnames(combined_final)]
 ```
 
 # Spatial pseudotime and diffusion map
 
-stLearn was run independently in Python/JupyterLab, not from R. Per-sample H5AD inputs must contain raw expression, `Adenoma`, `combined_cluster`, array coordinates, image coordinates, and Visium spatial metadata. See `python/README.md` for the standalone workflow. This section imports its results and calculates the diffusion map in R.
+stLearn was run independently in Python/JupyterLab, not from R. Per-sample H5AD inputs must contain raw expression, `Adenoma`, `combined_cluster`, array coordinates, image coordinates, and Visium spatial metadata. See `python/README.md` for the standalone workflow. This section imports its results and reproduces `Scripts/DiffusionMap.R`: clusters 0, 1, 2, 3, 4, 6, and 8 are retained without an additional pathology-region filter; RNA layers are split by sample and normalized; a 50-component PCA is followed by FastMNN; and diffusion mapping uses MNN dimensions 1–20 with `sigma = 1`. The displayed `DC1` and `DC2` are diffusion eigenvectors 1 and 3, respectively. The sign of `DC1` is oriented to correlate positively with imported `dpt_pseudotime`.
 
 ```{r import-stlearn-output}
 pseudotime_files <- list.files(
@@ -169,8 +183,7 @@ epithelial_clusters <- c("0", "1", "2", "3", "4", "6", "8")
 epithelial <- subset(
   combined_final,
   cells = colnames(combined_final)[
-    combined_final$combined_cluster %in% epithelial_clusters &
-      combined_final$Adenoma %in% c("Normal", "Low-grade")
+    combined_final$combined_cluster %in% epithelial_clusters
   ]
 )
 DefaultAssay(epithelial) <- "Spatial"
@@ -179,7 +192,7 @@ epithelial <- epithelial |>
   NormalizeData(verbose = FALSE) |>
   FindVariableFeatures(nfeatures = 2000, verbose = FALSE) |>
   ScaleData(verbose = FALSE) |>
-  RunPCA(npcs = 20, verbose = FALSE)
+  RunPCA(npcs = 50, verbose = FALSE)
 epithelial <- IntegrateLayers(
   epithelial,
   method = FastMNNIntegration,
@@ -187,8 +200,44 @@ epithelial <- IntegrateLayers(
   new.reduction = "mnn",
   verbose = FALSE
 )
-epithelial <- add_diffusion_map(epithelial, reduction = "mnn", dims = 1:20, sigma = 1)
+epithelial <- add_diffusion_map(
+  epithelial,
+  reduction = "mnn",
+  dims = 1:20,
+  sigma = 1,
+  components = c(1, 3),
+  orient_by = "dpt_pseudotime",
+  orient_component = 1
+)
 qs::qsave(epithelial, here("data", "derived", "epithelial_diffusion_map.qs"))
+```
+
+# Public scRNA-seq reference for Cell2location
+
+The Cell2location reference is derived from the integrated public `marteau_TA_updated.qs` object, not from the two Lau adenoma validation cohorts analyzed below. Missing primary annotations are filled from `cell_type_fine`; fibroblast, endothelial, cycling T-cell, cDC, and monocyte labels are consolidated; the 12 explicitly excluded rare or unwanted annotations are removed; and dysplastic labels are replaced by the curated `my_annotationV2` labels. `Dysplastic_Normal` cells are then excluded and `make.names()` is applied to the final labels used by Cell2location.
+
+The realized reference contains 52,871 cells, 24,593 genes, 66 samples, and 28 final annotations. `validate_marteau_reference()` checks all of these values and the per-annotation cell counts against the H5AD used in the analysis. The H5AD export places raw RNA counts in `X` and retains `nCount_RNA`, `nFeature_RNA`, the original barcode index, `sample_id`, `my_annotation`, and `study_id` in `obs`. Because the original export densifies the full count matrix and requires substantial memory, it runs only when `build_scrna_reference: true`.
+
+```{r build-scrna-reference}
+if (isTRUE(params$build_scrna_reference)) {
+  marteau_ta <- qs::qread(here("data", "reference", "marteau_TA_updated.qs"))
+  scrna_reference <- curate_marteau_reference(marteau_ta)
+  reference_counts <- validate_marteau_reference(scrna_reference)
+
+  write_csv(
+    reference_counts,
+    here("results", "tables", "scrna_reference_cell_counts.csv")
+  )
+  qs::qsave(
+    scrna_reference,
+    here("data", "derived", "marteau_cell2location_reference.qs"),
+    preset = "high"
+  )
+  export_marteau_reference_h5ad(
+    scrna_reference,
+    here("data", "reference", "scrna_reference.h5ad")
+  )
+}
 ```
 
 # Cell2location deconvolution
@@ -199,10 +248,24 @@ Cell2location was also run independently in Python/JupyterLab. The R workflow im
 cell2location_q05 <- read_csv(
   here("data", "derived", "cell2location", "cell2location_q05.csv"),
   show_col_types = FALSE
-)
+) |>
+  as.data.frame()
 colnames(cell2location_q05)[1] <- "barcode"
 rownames(cell2location_q05) <- cell2location_q05$barcode
 cell2location_q05$barcode <- NULL
+cell2location_q05 <- cell2location_q05 |>
+  mutate(
+    Dysplastic_Epi = Dysplastic_Absorptive_like + Dysplastic_Proliferating +
+      Dysplastic_Senescent_like + Dysplastic_Stem_like +
+      Dysplastic_Tuft_like + Dysplastic_Paneth_like,
+    Normal_Epi = Normal.Goblet + Normal.Crypt.cell + Normal.TA +
+      Normal.Colonocyte + Normal.Colonocyte.BEST4 + Tuft,
+    CD8_T_cells = CD8.T,
+    CD4_T_cells = CD4.T,
+    B_cell = B.cell.activated + GC.B.cell,
+    Plasma_cell = Plasma.IgA + Plasma.IgG,
+    T_cells = CD8_T_cells + CD4_T_cells
+  )
 combined_final <- AddMetaData(
   combined_final,
   cell2location_q05[intersect(colnames(combined_final), rownames(cell2location_q05)), , drop = FALSE]
@@ -318,39 +381,33 @@ gdf15_de
 # Bivariate local Moran's I
 
 ```{r local-moran}
-moran_data <- spatial_metadata(combined_final)
-moran_data$GDF15 <- extract_feature(
+moran_sen_stem <- bivar_local_moran_seurat(
   combined_final,
-  "GDF15",
-  assay = "Spatial"
-)[moran_data$barcode]
-moran_data$`ADT-CD8A` <- extract_feature(
+  target1 = "Senepy",
+  target2 = "Stem_Signature",
+  k = 6,
+  add_to_object = FALSE,
+  verbose = FALSE
+)
+moran_gdf15_cd8 <- bivar_local_moran_seurat(
   combined_final,
-  "ADT-CD8A",
-  assay = "ADT_dsb"
-)[moran_data$barcode]
-coord_cols <- if (all(c("x", "y") %in% colnames(moran_data))) c("x", "y") else c("imagecol", "imagerow")
-
-moran_sen_stem <- bivariate_local_moran(
-  moran_data,
-  x = "Senepy",
-  y = "Stem_Signature",
-  coord_cols = coord_cols,
+  target1 = "GDF15",
+  target2 = "ADT-CD8A",
+  assay1 = "Spatial",
+  assay2 = "ADT_dsb",
   k = 6,
-  permutations = 999,
-  seed = 1
+  clip_neg_to_zero = "ADT-CD8A",
+  add_to_object = FALSE,
+  verbose = FALSE
 )
-moran_gdf15_cd8 <- bivariate_local_moran(
-  moran_data,
-  x = "GDF15",
-  y = "ADT-CD8A",
-  coord_cols = coord_cols,
-  k = 6,
-  permutations = 999,
-  seed = 1
+write_csv(
+  rownames_to_column(moran_sen_stem, "barcode"),
+  here("results", "tables", "local_moran_senescence_stemness.csv")
 )
-write_csv(moran_sen_stem, here("results", "tables", "local_moran_senescence_stemness.csv"))
-write_csv(moran_gdf15_cd8, here("results", "tables", "local_moran_gdf15_cd8.csv"))
+write_csv(
+  rownames_to_column(moran_gdf15_cd8, "barcode"),
+  here("results", "tables", "local_moran_gdf15_cd8.csv")
+)
 ```
 
 # Partial spatial correlation
@@ -362,27 +419,31 @@ lag_data <- spatial_metadata(
 ) |>
   filter(Adenoma == "Low-grade")
 
-before_gdf15 <- spatial_lag_correlations(
+before_gdf15 <- within_sample_lagcorr(
   lag_data,
   x = "Senepy",
   y = "Stem_Signature",
-  adjust_x_for = NULL,
-  adjust_y_for = NULL,
-  coord_cols = c("array_row", "array_col"),
-  k = 6
+  coords_cols = c("array_row", "array_col"),
+  k = 6,
+  n_perm = 999,
+  seed = 1,
+  mode = "x_vs_Wy"
 )
-after_gdf15 <- spatial_lag_correlations(
+after_gdf15 <- within_sample_lagcorr(
   lag_data,
   x = "Senepy",
   y = "Stem_Signature",
-  adjust_x_for = "GDF15",
-  adjust_y_for = "GDF15",
-  coord_cols = c("array_row", "array_col"),
-  k = 6
+  coords_cols = c("array_row", "array_col"),
+  k = 6,
+  n_perm = 999,
+  seed = 1,
+  partial_covars = "GDF15",
+  residualize_x = TRUE,
+  mode = "x_vs_Wy"
 )
 partial_spatial_test <- compare_before_after(
-  before_gdf15,
-  after_gdf15,
+  before_gdf15$per_sample,
+  after_gdf15$per_sample,
   permutations = 999,
   seed = 1
 )
@@ -684,9 +745,9 @@ test_largesmall$betadisper_permutest
 test_largesmall$posthoc
 ```
 
-# Public single-cell validation
+# Independent public single-cell validation
 
-The public discovery and validation objects are restricted to tubular/tubulovillous adenomas before this step. Original published embeddings and annotations are retained in the complete objects; epithelial subsets are re-normalized and re-clustered for the subpopulation analysis.
+This analysis uses the separate Lau discovery and validation objects; these are not the Cell2location reference. The public discovery and validation objects are restricted to tubular/tubulovillous adenomas before this step. Original published embeddings and annotations are retained in the complete objects; epithelial subsets are re-normalized and re-clustered for the subpopulation analysis.
 
 ```{r single-cell-validation}
 validation_objects <- list(

@@ -32,101 +32,357 @@ spatial_metadata <- function(object, variables = character()) {
   out
 }
 
-bivariate_local_moran <- function(
-    data,
-    x,
-    y,
+# Released implementation of Scripts/Utils/bivar_local_moran_seurat.R.
+bivar_local_moran_seurat <- function(
+    obj,
+    target1,
+    target2,
+    assay1 = NULL,
+    assay2 = NULL,
+    layer1 = "data",
+    layer2 = "data",
     sample_col = "Sample_ID",
-    coord_cols = c("x", "y"),
+    images = NULL,
     k = 6,
-    permutations = 999,
-    seed = 1
+    clip_neg_to_zero = character(0),
+    na_category_label = NULL,
+    add_to_object = TRUE,
+    verbose = TRUE
 ) {
-  assert_columns(data, c(sample_col, coord_cols, x, y))
-  set.seed(seed)
-  cluster_labels <- c(
-    "Not significant", "High-High", "Low-Low", "Low-High",
+  if (!inherits(obj, "Seurat")) stop("obj must be a Seurat object")
+
+  message_if_verbose <- function(...) {
+    if (isTRUE(verbose)) message(...)
+  }
+  assays_with_feature <- function(object, feature) {
+    assays <- names(object@assays)
+    assays[vapply(assays, function(assay) {
+      feature %in% rownames(object[[assay]])
+    }, logical(1))]
+  }
+  get_vector <- function(object, variable, assay = NULL, layer = "data") {
+    if (variable %in% colnames(object@meta.data)) {
+      value <- object@meta.data[[variable]]
+      names(value) <- rownames(object@meta.data)
+      return(value)
+    }
+
+    matching_assays <- assays_with_feature(object, variable)
+    if (is.null(assay) && !length(matching_assays)) {
+      stop("Assay not found or feature not found for: ", variable)
+    }
+    selected_assay <- if (is.null(assay)) matching_assays[[1]] else assay
+    if (!(selected_assay %in% names(object@assays))) {
+      stop("Assay not found or feature not found for: ", variable)
+    }
+    if (!(variable %in% rownames(object[[selected_assay]]))) {
+      stop("Feature '", variable, "' not found in assay '", selected_assay, "'.")
+    }
+
+    Seurat::DefaultAssay(object) <- selected_assay
+    fetched <- Seurat::FetchData(object, vars = variable, layer = layer)
+    value <- fetched[[1]]
+    names(value) <- rownames(fetched)
+    value
+  }
+  pick_coordinate_columns <- function(data) {
+    if (all(c("x", "y") %in% colnames(data))) return(c("x", "y"))
+    if (all(c("imagecol", "imagerow") %in% colnames(data))) return(c("imagecol", "imagerow"))
+    if (all(c("array_col", "array_row") %in% colnames(data))) return(c("array_col", "array_row"))
+    stop("Cannot find coordinate columns: expected x/y, imagecol/imagerow, or array_col/array_row")
+  }
+
+  if (!(sample_col %in% colnames(obj@meta.data))) {
+    stop("sample_col not found in meta.data: ", sample_col)
+  }
+  if (is.null(images)) {
+    images <- unique(as.character(obj@meta.data[[sample_col]]))
+    images <- images[images %in% names(obj@images)]
+    if (!length(images)) {
+      stop("No image names match the values in ", sample_col, "; supply images explicitly")
+    }
+  } else {
+    images <- as.character(images)
+    missing_images <- setdiff(images, names(obj@images))
+    if (length(missing_images)) {
+      stop("Images not present in obj@images: ", paste(missing_images, collapse = ", "))
+    }
+  }
+
+  value1 <- get_vector(obj, target1, assay = assay1, layer = layer1)
+  value2 <- get_vector(obj, target2, assay = assay2, layer = layer2)
+  if (target1 %in% clip_neg_to_zero) value1 <- ifelse(value1 < 0, 0, value1)
+  if (target2 %in% clip_neg_to_zero) value2 <- ifelse(value2 < 0, 0, value2)
+
+  cells <- colnames(obj)
+  value1 <- value1[cells]
+  value2 <- value2[cells]
+  local_i <- stats::setNames(rep(NA_real_, length(cells)), cells)
+  local_p <- stats::setNames(rep(NA_real_, length(cells)), cells)
+  local_cluster <- stats::setNames(rep(NA_character_, length(cells)), cells)
+  cluster_levels <- c(
+    "Not sig", "High-High", "Low-Low", "Low-High",
     "High-Low", "Undefined", "Isolated"
   )
 
-  data |>
-    dplyr::group_by(.data[[sample_col]]) |>
-    dplyr::group_modify(function(df, key) {
-      complete <- stats::complete.cases(df[, c(coord_cols, x, y)])
-      result <- tibble::tibble(
-        barcode = df$barcode,
-        local_bimoran = NA_real_,
-        local_bimoran_p = NA_real_,
-        local_bimoran_class = NA_character_
+  for (image in images) {
+    image_cells <- rownames(obj@meta.data)[as.character(obj@meta.data[[sample_col]]) == image]
+    if (!length(image_cells)) next
+    coordinates <- tryCatch(
+      as.data.frame(Seurat::GetTissueCoordinates(obj, image = image)),
+      error = function(error) NULL
+    )
+    if (is.null(coordinates) || !nrow(coordinates)) {
+      message_if_verbose("Skip ", image, ": no coordinates.")
+      next
+    }
+    coordinates$cell <- rownames(coordinates)
+    image_data <- dplyr::left_join(
+      data.frame(
+        cell = image_cells,
+        target1 = value1[image_cells],
+        target2 = value2[image_cells],
+        stringsAsFactors = FALSE
+      ),
+      coordinates,
+      by = "cell"
+    )
+    coordinate_columns <- tryCatch(
+      pick_coordinate_columns(image_data),
+      error = function(error) NULL
+    )
+    if (is.null(coordinate_columns)) {
+      message_if_verbose("Skip ", image, ": cannot find coordinate columns.")
+      next
+    }
+    complete <- stats::complete.cases(
+      image_data[, c("target1", "target2", coordinate_columns), drop = FALSE]
+    )
+    image_data <- image_data[complete, , drop = FALSE]
+    if (nrow(image_data) < k + 2L) {
+      message_if_verbose(
+        "Skip ", image, ": too few valid spots after filtering (", nrow(image_data), ")."
       )
-      use <- df[complete, , drop = FALSE]
-      if (nrow(use) <= k + 1) return(result)
+      next
+    }
 
-      geometry <- sf::st_as_sf(use, coords = coord_cols, remove = FALSE)
-      weights <- rgeoda::knn_weights(geometry, k = k)
-      lisa <- rgeoda::local_bimoran(
-        weights,
-        use[, c(x, y), drop = FALSE],
-        permutations = permutations,
-        permutation_method = "complete"
-      )
-      idx <- match(use$barcode, result$barcode)
-      result$local_bimoran[idx] <- rgeoda::lisa_values(lisa)
-      result$local_bimoran_p[idx] <- rgeoda::lisa_pvalues(lisa)
-      result$local_bimoran_class[idx] <- cluster_labels[rgeoda::lisa_clusters(lisa) + 1]
-      result
-    }) |>
-    dplyr::ungroup()
+    geometry <- sf::st_as_sf(image_data, coords = coordinate_columns, remove = FALSE)
+    weights <- tryCatch(rgeoda::knn_weights(geometry, k = k), error = function(error) NULL)
+    if (is.null(weights)) {
+      message_if_verbose("Skip ", image, ": knn_weights failed.")
+      next
+    }
+    lisa <- tryCatch(
+      rgeoda::local_bimoran(weights, image_data[, c("target1", "target2")]),
+      error = function(error) NULL
+    )
+    if (is.null(lisa)) {
+      message_if_verbose("Skip ", image, ": local_bimoran failed.")
+      next
+    }
+
+    local_i[image_data$cell] <- rgeoda::lisa_values(lisa)
+    local_p[image_data$cell] <- rgeoda::lisa_pvalues(lisa)
+    local_cluster[image_data$cell] <- as.character(factor(
+      rgeoda::lisa_clusters(lisa),
+      levels = 0:6,
+      labels = cluster_levels
+    ))
+    message_if_verbose("Done ", image, ": n_valid=", nrow(image_data))
+  }
+
+  if (!is.null(na_category_label)) {
+    local_cluster[is.na(local_cluster)] <- na_category_label
+  }
+  safe_name <- function(value) gsub("\\s+", "_", gsub("-", "_", value))
+  suffix <- paste(safe_name(target1), safe_name(target2), sep = "_")
+  metadata <- data.frame(
+    Biv_Moran_I = local_i,
+    p_value_Moran = local_p,
+    Cluster_Moran = local_cluster,
+    stringsAsFactors = FALSE,
+    check.names = FALSE
+  )
+  colnames(metadata) <- paste0(colnames(metadata), "_", suffix)
+
+  if (isTRUE(add_to_object)) {
+    return(Seurat::AddMetaData(obj, metadata))
+  }
+  metadata
 }
 
-.knn_lag <- function(values, coordinates, k = 6) {
-  neighbors <- RANN::nn2(coordinates, coordinates, k = min(k + 1, nrow(coordinates)))$nn.idx[, -1, drop = FALSE]
-  apply(neighbors, 1, function(index) mean(values[index], na.rm = TRUE))
+# These are the final (later) definitions in
+# Scripts/Utils/Spatial smoothed spatial correlation.R.
+make_listw_knn <- function(coords, k = 6, sym = TRUE, jitter_eps = 1e-8) {
+  coords <- as.matrix(coords)
+  if (ncol(coords) != 2L) stop("coords must have exactly two columns")
+  if (any(duplicated(coords))) {
+    coordinate_scale <- max(diff(range(coords[, 1])), diff(range(coords[, 2])), 1)
+    set.seed(1)
+    coords <- coords + matrix(
+      stats::rnorm(length(coords), sd = jitter_eps * coordinate_scale),
+      ncol = 2
+    )
+  }
+  nearest <- spdep::knearneigh(coords, k = k)
+  neighbors <- spdep::knn2nb(nearest, sym = sym)
+  spdep::nb2listw(neighbors, style = "W", zero.policy = TRUE)
 }
 
-spatial_lag_correlations <- function(
-    data,
-    x = "Senepy",
-    y = "Stem_Signature",
-    adjust_x_for = NULL,
-    adjust_y_for = NULL,
+lag_spearman_perm_mode <- function(
+    x,
+    y,
+    listw,
+    mode = c("x_vs_Wy", "Wx_vs_Wy"),
+    n_perm = 999,
+    seed = 1
+) {
+  mode <- match.arg(mode)
+  complete <- is.finite(x) & is.finite(y)
+  x <- x[complete]
+  y <- y[complete]
+  if (length(x) < 10L || stats::sd(x) == 0 || stats::sd(y) == 0) {
+    return(list(rho = NA_real_, p = NA_real_))
+  }
+
+  lag_y <- spdep::lag.listw(listw, y, zero.policy = TRUE)
+  if (stats::sd(lag_y) == 0) return(list(rho = NA_real_, p = NA_real_))
+  comparison_x <- if (mode == "x_vs_Wy") {
+    x
+  } else {
+    lag_x <- spdep::lag.listw(listw, x, zero.policy = TRUE)
+    if (stats::sd(lag_x) == 0) return(list(rho = NA_real_, p = NA_real_))
+    lag_x
+  }
+  rho <- suppressWarnings(stats::cor(comparison_x, lag_y, method = "spearman"))
+  if (!is.finite(rho)) return(list(rho = NA_real_, p = NA_real_))
+
+  set.seed(seed)
+  null_rho <- replicate(n_perm, {
+    permuted_lag_y <- spdep::lag.listw(
+      listw,
+      sample(y, replace = FALSE),
+      zero.policy = TRUE
+    )
+    suppressWarnings(stats::cor(comparison_x, permuted_lag_y, method = "spearman"))
+  })
+  p_value <- (1 + sum(abs(null_rho) >= abs(rho), na.rm = TRUE)) / (n_perm + 1)
+  list(rho = rho, p = p_value)
+}
+
+within_sample_lagcorr <- function(
+    md,
     sample_col = "Sample_ID",
     group_col = "LargeSmall",
-    coord_cols = c("array_row", "array_col"),
+    x = "Senepy",
+    y = "Stem_signature",
+    coords_cols = c("array_row", "array_col"),
     k = 6,
-    min_spots = 50
+    min_spots = 50,
+    n_perm = 999,
+    seed = 1,
+    partial_covars = NULL,
+    residualize_x = FALSE,
+    mode = c("x_vs_Wy", "Wx_vs_Wy")
 ) {
-  needed <- c(sample_col, group_col, coord_cols, x, y, adjust_x_for, adjust_y_for)
-  assert_columns(data, needed)
+  mode <- match.arg(mode)
+  assert_columns(md, c(sample_col, group_col, x, y, coords_cols))
+  if (!is.null(partial_covars)) assert_columns(md, partial_covars)
 
-  data |>
+  per_sample <- md |>
+    dplyr::filter(
+      is.finite(.data[[x]]),
+      is.finite(.data[[y]]),
+      is.finite(.data[[coords_cols[[1]]]]),
+      is.finite(.data[[coords_cols[[2]]]])
+    ) |>
     dplyr::group_by(.data[[sample_col]]) |>
     dplyr::group_modify(function(df, key) {
-      model_variables <- unique(c(x, y, adjust_x_for, adjust_y_for, coord_cols))
-      keep <- stats::complete.cases(df[, model_variables, drop = FALSE])
-      df <- df[keep, , drop = FALSE]
-      group <- unique(as.character(df[[group_col]]))
-      group <- if (length(group) == 1) group else NA_character_
-      if (nrow(df) < min_spots) {
-        return(tibble::tibble(n = nrow(df), group = group, rho = NA_real_, fisher_z = NA_real_))
+      group_values <- unique(stats::na.omit(as.character(df[[group_col]])))
+      group <- if (length(group_values) == 1L) group_values else NA_character_
+      n <- nrow(df)
+      empty_result <- function(p = NA_real_) {
+        tibble::tibble(n = n, group = group, rho = NA_real_, p = p, z = NA_real_)
+      }
+      if (n < min_spots) return(empty_result())
+
+      analysis_data <- df
+      x_values <- analysis_data[[x]]
+      y_values <- analysis_data[[y]]
+      if (!is.null(partial_covars)) {
+        model_columns <- c(x, y, partial_covars, coords_cols)
+        complete <- stats::complete.cases(analysis_data[, model_columns, drop = FALSE])
+        analysis_data <- analysis_data[complete, , drop = FALSE]
+        if (nrow(analysis_data) < max(10, length(partial_covars) + 3)) {
+          return(empty_result())
+        }
+        y_values <- stats::residuals(
+          stats::lm(stats::reformulate(partial_covars, response = y), data = analysis_data)
+        )
+        x_values <- if (isTRUE(residualize_x)) {
+          stats::residuals(
+            stats::lm(stats::reformulate(partial_covars, response = x), data = analysis_data)
+          )
+        } else {
+          analysis_data[[x]]
+        }
       }
 
-      x_values <- df[[x]]
-      if (!is.null(adjust_x_for)) {
-        model <- stats::lm(stats::reformulate(adjust_x_for, response = x), data = df)
-        x_values <- stats::residuals(model)
-      }
-      y_values <- df[[y]]
-      if (!is.null(adjust_y_for)) {
-        model <- stats::lm(stats::reformulate(adjust_y_for, response = y), data = df)
-        y_values <- stats::residuals(model)
-      }
-      lag_y <- .knn_lag(y_values, as.matrix(df[, coord_cols]), k = k)
-      rho <- suppressWarnings(stats::cor(x_values, lag_y, method = "spearman"))
-      rho <- pmin(pmax(rho, -0.999999), 0.999999)
-      tibble::tibble(n = nrow(df), group = group, rho = rho, fisher_z = atanh(rho))
+      weights <- make_listw_knn(as.matrix(analysis_data[, coords_cols]), k = k)
+      result <- lag_spearman_perm_mode(
+        x_values,
+        y_values,
+        weights,
+        mode = mode,
+        n_perm = n_perm,
+        seed = seed
+      )
+      if (is.na(result$rho)) return(empty_result(result$p))
+      clipped_rho <- pmin(pmax(result$rho, -0.999999), 0.999999)
+      tibble::tibble(
+        n = n,
+        group = group,
+        rho = result$rho,
+        p = result$p,
+        z = atanh(clipped_rho)
+      )
     }) |>
     dplyr::ungroup()
+
+  used <- per_sample |>
+    dplyr::filter(!is.na(.data$z), .data$group %in% c("Large", "Small")) |>
+    dplyr::mutate(group = factor(.data$group, levels = c("Small", "Large")))
+  if (nlevels(droplevels(used$group)) < 2L) {
+    return(list(
+      per_sample = per_sample,
+      per_sample_used = used,
+      wilcox = NULL,
+      perm_p = NA_real_,
+      diff_median_z = NA_real_,
+      rho_median_Large = if (any(used$group == "Large")) tanh(stats::median(used$z[used$group == "Large"])) else NA_real_,
+      rho_median_Small = if (any(used$group == "Small")) tanh(stats::median(used$z[used$group == "Small"])) else NA_real_,
+      note = "Only one group (Large/Small) remained after filtering to non-NA z."
+    ))
+  }
+
+  wilcox <- stats::wilcox.test(z ~ group, data = used, exact = FALSE)
+  observed <- with(used, stats::median(z[group == "Large"]) - stats::median(z[group == "Small"]))
+  set.seed(seed)
+  null_difference <- replicate(n_perm, {
+    permuted_group <- sample(used$group)
+    stats::median(used$z[permuted_group == "Large"]) -
+      stats::median(used$z[permuted_group == "Small"])
+  })
+
+  list(
+    per_sample = per_sample,
+    per_sample_used = used,
+    wilcox = wilcox,
+    perm_p = mean(abs(null_difference) >= abs(observed)),
+    diff_median_z = observed,
+    rho_median_Large = tanh(stats::median(used$z[used$group == "Large"])),
+    rho_median_Small = tanh(stats::median(used$z[used$group == "Small"]))
+  )
 }
 
 compare_before_after <- function(
@@ -140,12 +396,12 @@ compare_before_after <- function(
   joined <- before |>
     dplyr::select(
       dplyr::all_of(c(sample_col, group_col)),
-      z_before = fisher_z,
+      z_before = z,
       rho_before = rho
     ) |>
     dplyr::inner_join(
       after |>
-        dplyr::select(dplyr::all_of(sample_col), z_after = fisher_z, rho_after = rho),
+        dplyr::select(dplyr::all_of(sample_col), z_after = z, rho_after = rho),
       by = sample_col
     ) |>
     dplyr::filter(is.finite(.data$z_before), is.finite(.data$z_after)) |>
