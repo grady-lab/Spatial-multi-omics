@@ -653,106 +653,317 @@ separate_tissue_islands_semla <- function(object, roi_col = "tissue_roi") {
   object
 }
 
-compare_sample_summaries <- function(
-    data,
-    score,
-    condition,
+compare_score_clusters_paired <- function(
+    md,
+    score_col = "Senepy",
     sample_col = "Sample_ID",
-    levels,
-    paired,
-    minimum_spots = 30,
-    summary = stats::median
+    condition_col,
+    level_a,
+    level_b,
+    condition_level = c("spot", "sample"),
+    agg = c("median", "mean"),
+    min_spots = 30,
+    drop_na_score = TRUE
 ) {
-  summarized <- data |>
-    dplyr::filter(.data[[condition]] %in% levels, is.finite(.data[[score]])) |>
-    dplyr::group_by(.data[[sample_col]], .data[[condition]]) |>
-    dplyr::summarise(n = dplyr::n(), value = summary(.data[[score]], na.rm = TRUE), .groups = "drop") |>
-    dplyr::filter(.data$n >= minimum_spots)
+  condition_level <- match.arg(condition_level)
+  agg <- match.arg(agg)
+  df <- md
+  if (drop_na_score) {
+    df <- dplyr::filter(df, !is.na(.data[[score_col]]))
+  }
 
-  if (paired) {
-    wide <- tidyr::pivot_wider(summarized, names_from = dplyr::all_of(condition), values_from = .data$value) |>
-      tidyr::drop_na(dplyr::all_of(levels))
-    test <- stats::wilcox.test(wide[[levels[2]]], wide[[levels[1]]], paired = TRUE, exact = FALSE)
-    effect <- stats::median(wide[[levels[2]]] - wide[[levels[1]]])
-  } else {
+  if (condition_level == "spot") {
+    df_sum <- df |>
+      dplyr::filter(.data[[condition_col]] %in% c(level_a, level_b)) |>
+      dplyr::group_by(.data[[sample_col]], .data[[condition_col]]) |>
+      dplyr::summarise(
+        n = dplyr::n(),
+        score = if (agg == "median") {
+          stats::median(.data[[score_col]], na.rm = TRUE)
+        } else {
+          mean(.data[[score_col]], na.rm = TRUE)
+        },
+        .groups = "drop"
+      ) |>
+      dplyr::filter(.data$n >= min_spots)
+    wide <- df_sum |>
+      dplyr::select(
+        dplyr::all_of(sample_col),
+        dplyr::all_of(condition_col),
+        dplyr::all_of("score")
+      ) |>
+      tidyr::pivot_wider(
+        names_from = dplyr::all_of(condition_col),
+        values_from = "score"
+      ) |>
+      dplyr::filter(!is.na(.data[[level_a]]), !is.na(.data[[level_b]]))
     test <- stats::wilcox.test(
-      stats::reformulate(condition, response = "value"),
-      data = summarized,
+      wide[[level_a]],
+      wide[[level_b]],
+      paired = TRUE,
       exact = FALSE
     )
-    effect <- stats::median(summarized$value[summarized[[condition]] == levels[2]]) -
-      stats::median(summarized$value[summarized[[condition]] == levels[1]])
-    wide <- NULL
+    return(list(
+      mode = "paired_within_sample",
+      wide = wide,
+      n_samples = nrow(wide),
+      test = test,
+      df_sum = df_sum,
+      ave_median = c(
+        stats::median(wide[[level_a]]),
+        stats::median(wide[[level_b]])
+      ),
+      diff_median = stats::median(wide[[level_a]] - wide[[level_b]], na.rm = TRUE)
+    ))
   }
-  list(summary = summarized, paired_data = wide, test = test, median_difference = effect)
+
+  sample_labels <- df |>
+    dplyr::group_by(.data[[sample_col]]) |>
+    dplyr::summarise(
+      condition = unique(stats::na.omit(as.character(.data[[condition_col]]))),
+      .groups = "drop"
+    )
+  invalid_samples <- sample_labels |>
+    dplyr::filter(lengths(.data$condition) != 1)
+  if (nrow(invalid_samples) > 0) {
+    stop(
+      "Some samples have multiple values in ", condition_col,
+      ". Example sample(s): ",
+      paste(utils::head(invalid_samples[[sample_col]], 5), collapse = ", ")
+    )
+  }
+  sample_labels$condition <- vapply(sample_labels$condition, `[`, character(1), 1)
+
+  df_sum <- df |>
+    dplyr::group_by(.data[[sample_col]]) |>
+    dplyr::summarise(
+      n = dplyr::n(),
+      score = if (agg == "median") {
+        stats::median(.data[[score_col]], na.rm = TRUE)
+      } else {
+        mean(.data[[score_col]], na.rm = TRUE)
+      },
+      .groups = "drop"
+    ) |>
+    dplyr::left_join(sample_labels, by = stats::setNames(sample_col, sample_col)) |>
+    dplyr::filter(.data$condition %in% c(level_a, level_b), .data$n >= min_spots)
+  group_a <- dplyr::pull(dplyr::filter(df_sum, .data$condition == level_a), "score")
+  group_b <- dplyr::pull(dplyr::filter(df_sum, .data$condition == level_b), "score")
+  test <- stats::wilcox.test(group_a, group_b, paired = FALSE, exact = FALSE)
+  list(
+    mode = "unpaired_between_samples",
+    per_sample = df_sum,
+    n_a = sum(df_sum$condition == level_a),
+    n_b = sum(df_sum$condition == level_b),
+    test = test,
+    ave_median = c(
+      stats::median(group_a, na.rm = TRUE),
+      stats::median(group_b, na.rm = TRUE)
+    ),
+    diff_median = stats::median(group_a, na.rm = TRUE) -
+      stats::median(group_b, na.rm = TRUE)
+  )
 }
 
-composition_tests <- function(
-    data,
-    category,
-    condition,
-    sample_col = "Sample_ID",
-    paired = FALSE,
-    permutations = 999,
-    seed = 1
+run_comp_tests <- function(
+    meta,
+    sample_col,
+    condition_col,
+    category_col,
+    condition_level = c("sample", "spot"),
+    condition_keep = NULL,
+    category_levels = NULL,
+    n_perm = 999,
+    seed = 1,
+    control_level = NULL,
+    case_level = NULL,
+    paired_only = TRUE,
+    drop_empty_strata = TRUE,
+    na_category_label = NULL
 ) {
+  condition_level <- match.arg(condition_level)
   set.seed(seed)
-  input <- data |>
-    dplyr::transmute(
-      .sample = as.character(.data[[sample_col]]),
-      .condition = as.character(.data[[condition]]),
-      .category = as.character(.data[[category]])
-    ) |>
-    dplyr::filter(!is.na(.data$.sample), !is.na(.data$.condition), !is.na(.data$.category))
-  category_levels <- sort(unique(input$.category))
-  condition_levels <- sort(unique(input$.condition))
 
-  proportions <- input |>
-    dplyr::count(.data$.sample, .data$.condition, .data$.category, name = "count") |>
-    dplyr::group_by(.data$.sample, .data$.condition) |>
-    tidyr::complete(.category = category_levels, fill = list(count = 0)) |>
-    dplyr::mutate(proportion = .data$count / sum(.data$count)) |>
-    dplyr::ungroup()
-  wide <- proportions |>
-    tidyr::pivot_wider(names_from = .data$.category, values_from = .data$proportion, values_fill = 0)
-  matrix <- sqrt(as.matrix(wide[, setdiff(colnames(wide), c(".sample", ".condition")), drop = FALSE]))
-  condition_vector <- wide$.condition
-  permanova <- vegan::adonis2(matrix ~ condition_vector, permutations = permutations)
-  dispersion <- vegan::betadisper(stats::dist(matrix), group = condition_vector)
-  dispersion_test <- vegan::permutest(dispersion, permutations = permutations)
-
-  posthoc <- proportions |>
-    dplyr::group_by(.data$.category) |>
-    dplyr::group_modify(function(df, key) {
-      if (paired) {
-        if (length(condition_levels) != 2) stop("Paired composition tests require two conditions")
-        pair <- tidyr::pivot_wider(
-          df,
-          id_cols = .data$.sample,
-          names_from = .data$.condition,
-          values_from = .data$proportion
-        ) |>
-          tidyr::drop_na(dplyr::all_of(condition_levels))
-        p <- stats::wilcox.test(
-          pair[[condition_levels[2]]], pair[[condition_levels[1]]],
-          paired = TRUE, exact = FALSE
-        )$p.value
-      } else {
-        p <- stats::wilcox.test(df$proportion ~ df$.condition, exact = FALSE)$p.value
-      }
-      tibble::tibble(p_value = p)
-    }) |>
-    dplyr::ungroup() |>
+  df <- meta |>
     dplyr::mutate(
-      !!category := .data$.category,
-      p_adjusted = stats::p.adjust(.data$p_value, method = "BH")
+      .sample = as.character(.data[[sample_col]]),
+      .cond = as.character(.data[[condition_col]]),
+      .cat = as.character(.data[[category_col]])
     ) |>
-    dplyr::select(-.data$.category)
+    dplyr::filter(!is.na(.data$.sample), !is.na(.data$.cond))
+
+  if (!is.null(condition_keep)) {
+    df <- dplyr::filter(df, .data$.cond %in% condition_keep)
+  }
+  if (!is.null(na_category_label)) {
+    missing_category <- is.na(df$.cat) | df$.cat == "NA" | df$.cat == ""
+    df$.cat[missing_category] <- na_category_label
+  }
+  df <- dplyr::filter(df, !is.na(.data$.cat), .data$.cat != "NA", .data$.cat != "")
+  if (is.null(category_levels)) category_levels <- sort(unique(df$.cat))
+
+  tab <- dplyr::count(df, .data$.sample, .data$.cond, .data$.cat, name = "k")
+  if (condition_level == "sample") {
+    tab <- tab |>
+      dplyr::group_by(.data$.sample, .data$.cond) |>
+      tidyr::complete(.cat = category_levels, fill = list(k = 0)) |>
+      dplyr::mutate(
+        n = sum(.data$k),
+        prop = ifelse(.data$n > 0, .data$k / .data$n, NA_real_)
+      ) |>
+      dplyr::ungroup()
+  } else {
+    condition_levels <- sort(unique(df$.cond))
+    tab <- tab |>
+      dplyr::group_by(.data$.sample) |>
+      tidyr::complete(
+        .cond = condition_levels,
+        .cat = category_levels,
+        fill = list(k = 0)
+      ) |>
+      dplyr::group_by(.data$.sample, .data$.cond) |>
+      dplyr::mutate(
+        n = sum(.data$k),
+        prop = ifelse(.data$n > 0, .data$k / .data$n, NA_real_)
+      ) |>
+      dplyr::ungroup()
+  }
+
+  tab <- tab |>
+    dplyr::rename(
+      !!sample_col := .data$.sample,
+      !!condition_col := .data$.cond,
+      !!category_col := .data$.cat
+    ) |>
+    dplyr::mutate(
+      !!category_col := factor(.data[[category_col]], levels = category_levels)
+    )
+
+  strata_n <- tab |>
+    dplyr::group_by(.data[[sample_col]], .data[[condition_col]]) |>
+    dplyr::summarise(n = max(.data$n, na.rm = TRUE), .groups = "drop")
+  if (drop_empty_strata) {
+    keep_strata <- dplyr::filter(strata_n, !is.na(.data$n), .data$n > 0)
+    tab <- dplyr::inner_join(
+      tab,
+      dplyr::select(keep_strata, dplyr::all_of(c(sample_col, condition_col))),
+      by = c(sample_col, condition_col)
+    )
+  }
+
+  if (condition_level == "spot" && paired_only) {
+    condition_levels <- sort(unique(as.character(tab[[condition_col]])))
+    if (is.null(control_level) || is.null(case_level)) {
+      if (all(c("Normal", "Low-grade") %in% condition_levels)) {
+        control_level <- "Normal"
+        case_level <- "Low-grade"
+      } else {
+        control_level <- condition_levels[[1]]
+        case_level <- condition_levels[[2]]
+      }
+    }
+    have_both <- strata_n |>
+      dplyr::filter(
+        .data[[condition_col]] %in% c(control_level, case_level),
+        !is.na(.data$n),
+        .data$n > 0
+      ) |>
+      dplyr::count(.data[[sample_col]], name = "n_conditions") |>
+      dplyr::filter(.data$n_conditions == 2) |>
+      dplyr::select(dplyr::all_of(sample_col))
+    tab <- dplyr::semi_join(tab, have_both, by = sample_col)
+  }
+
+  wide <- tab |>
+    dplyr::select(
+      dplyr::all_of(sample_col),
+      dplyr::all_of(condition_col),
+      dplyr::all_of(category_col),
+      dplyr::all_of("prop")
+    ) |>
+    tidyr::pivot_wider(
+      names_from = dplyr::all_of(category_col),
+      values_from = "prop",
+      values_fill = 0
+    )
+  condition_levels_present <- sort(unique(as.character(wide[[condition_col]])))
+  if (length(condition_levels_present) != 2) {
+    stop(
+      "After filtering, condition levels != 2. Current levels: ",
+      paste(condition_levels_present, collapse = ", "),
+      ". Consider paired_only=FALSE or na_category_label='Unclassified'."
+    )
+  }
+
+  composition_matrix <- as.matrix(
+    dplyr::select(wide, -dplyr::all_of(c(sample_col, condition_col)))
+  )
+  X_hell <- sqrt(composition_matrix)
+  permanova <- vegan::adonis2(
+    X_hell ~ wide[[condition_col]],
+    permutations = n_perm
+  )
+  distance <- vegan::vegdist(X_hell, method = "euclidean")
+  betadisper <- vegan::betadisper(distance, group = wide[[condition_col]])
+  betadisper_permutest <- vegan::permutest(betadisper, permutations = n_perm)
+
+  if (condition_level == "sample") {
+    group_1 <- condition_levels_present[[1]]
+    group_2 <- condition_levels_present[[2]]
+    posthoc <- tab |>
+      dplyr::group_by(.data[[category_col]]) |>
+      dplyr::summarise(
+        p = stats::wilcox.test(
+          .data$prop[.data[[condition_col]] == group_1],
+          .data$prop[.data[[condition_col]] == group_2]
+        )$p.value,
+        diff_med = stats::median(
+          .data$prop[.data[[condition_col]] == group_2],
+          na.rm = TRUE
+        ) - stats::median(
+          .data$prop[.data[[condition_col]] == group_1],
+          na.rm = TRUE
+        ),
+        .groups = "drop"
+      ) |>
+      dplyr::mutate(p_adj = stats::p.adjust(.data$p, method = "BH")) |>
+      dplyr::arrange(.data$p_adj)
+  } else {
+    posthoc <- lapply(levels(tab[[category_col]]), function(category) {
+      paired <- tab |>
+        dplyr::filter(.data[[category_col]] == category) |>
+        dplyr::select(
+          dplyr::all_of(sample_col),
+          dplyr::all_of(condition_col),
+          dplyr::all_of("prop")
+        ) |>
+        tidyr::pivot_wider(
+          names_from = dplyr::all_of(condition_col),
+          values_from = "prop",
+          values_fill = 0
+        )
+      case <- paired[[case_level]]
+      control <- paired[[control_level]]
+      test <- stats::wilcox.test(case, control, paired = TRUE)
+      tibble::tibble(
+        !!category_col := category,
+        p = test$p.value,
+        diff_med = stats::median(case - control, na.rm = TRUE)
+      )
+    }) |>
+      dplyr::bind_rows() |>
+      dplyr::mutate(p_adj = stats::p.adjust(.data$p, method = "BH")) |>
+      dplyr::arrange(.data$p_adj)
+  }
 
   list(
-    proportions = proportions,
+    tab = tab,
+    wide = wide,
+    X_hell = X_hell,
     permanova = permanova,
-    dispersion = dispersion_test,
-    posthoc = posthoc
+    betadisper = betadisper,
+    betadisper_permutest = betadisper_permutest,
+    posthoc = posthoc,
+    condition_levels = condition_levels_present
   )
 }

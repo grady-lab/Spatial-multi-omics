@@ -27,7 +27,6 @@ Imports:
     UCell,
     ccAFv2 (== 0.0.0.9),
     CytoTRACE2 (== 1.1.0),
-    chisq.posthoc.test (== 0.1.2),
     rgeoda (== 0.1.0),
     sf,
     spdep,

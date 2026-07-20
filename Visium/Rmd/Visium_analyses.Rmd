@@ -103,13 +103,6 @@ cluster_markers <- FindAllMarkers(
   mutate(delta_pct = pct.1 - pct.2)
 
 write_csv(cluster_markers, here("results", "tables", "cluster_markers.csv"))
-
-cluster_by_size <- table(combined_final$combined_cluster, combined_final$LargeSmall)
-cluster_size_chisq <- chisq.test(cluster_by_size)
-cluster_size_posthoc <- chisq.posthoc.test::chisq.posthoc.test(
-  cluster_by_size,
-  method = "fdr"
-)
 ```
 
 Cluster names used throughout the paper were assigned by jointly reviewing these RNA markers, normalized ADTs, and spatial localization relative to the pathology annotations. No expression-derived pathology labels are created in this notebook.
@@ -520,27 +513,175 @@ write_csv(stem_distance_bins, here("results", "tables", "surface_distance_stemne
 write_csv(senescence_distance_bins, here("results", "tables", "surface_distance_senescence.csv"))
 ```
 
-# Sample-level continuous and compositional tests
+# Continuous and categorical-proportion tests
+
+All continuous-value comparisons use `compare_score_clusters_paired()`. Spot-level conditions are summarized within each sample and compared with a paired Wilcoxon signed-rank test; sample-level conditions are summarized per sample and compared with an unpaired Wilcoxon rank-sum test. The reported effect is the median for `level_a` minus the median for `level_b`.
+
+The Senepy comparisons correspond to the sample-level cluster summary plotted in `Supple_plotting.Rmd`. Pseudotime is compared between paired Low-grade and Normal regions, and between Large and Small adenomas after restricting the latter analysis to Low-grade spots. Every continuous comparison uses per-sample medians and requires at least 30 spots in an analyzed sample/condition stratum. Bonferroni-adjusted p-values are reported for the source notebook's two primary Senepy contrasts, cluster 2 versus 3 and cluster 4 versus 3.
+
+All categorical-proportion comparisons use `run_comp_tests()`. The function forms a complete category-proportion table for every sample/condition stratum, applies the Hellinger transformation before PERMANOVA and its dispersion check, and performs category-wise Wilcoxon tests with Benjamini-Hochberg correction. Pathology is a spot-level condition, so Normal and Low-grade regions are paired within samples that contain both. Adenoma post-hoc effects are Low-grade minus Normal. Adenoma size is a sample-level condition, so Small and Large samples are compared as independent groups. The same helper can be used for other categorical outcomes, including Moran's I classifications, by changing `category_col`.
 
 ```{r sample-level-statistics}
-senescence_large_small <- compare_sample_summaries(
+senepy_c2_vs_c3 <- compare_score_clusters_paired(
   combined_final@meta.data,
-  score = "Senepy",
-  condition = "LargeSmall",
-  levels = c("Small", "Large"),
-  paired = FALSE
+  score_col = "Senepy",
+  sample_col = "Sample_ID",
+  condition_col = "combined_cluster",
+  level_a = "2",
+  level_b = "3",
+  condition_level = "spot",
+  agg = "median",
+  min_spots = 30
 )
 
-cluster_composition <- composition_tests(
+senepy_c4_vs_c3 <- compare_score_clusters_paired(
   combined_final@meta.data,
-  category = "combined_cluster",
-  condition = "LargeSmall",
+  score_col = "Senepy",
   sample_col = "Sample_ID",
-  paired = FALSE,
-  permutations = 999,
-  seed = 1
+  condition_col = "combined_cluster",
+  level_a = "4",
+  level_b = "3",
+  condition_level = "spot",
+  agg = "median",
+  min_spots = 30
 )
-write_csv(cluster_composition$posthoc, here("results", "tables", "cluster_composition_posthoc.csv"))
+
+senepy_c4_vs_c2 <- compare_score_clusters_paired(
+  combined_final@meta.data,
+  score_col = "Senepy",
+  sample_col = "Sample_ID",
+  condition_col = "combined_cluster",
+  level_a = "4",
+  level_b = "2",
+  condition_level = "spot",
+  agg = "median",
+  min_spots = 30
+)
+
+epithelial_metadata <- combined_final@meta.data |>
+  filter(Adenoma %in% c("Normal", "Low-grade"))
+pseudotime_lowgrade_vs_normal <- compare_score_clusters_paired(
+  epithelial_metadata,
+  score_col = "dpt_pseudotime",
+  sample_col = "Sample_ID",
+  condition_col = "Adenoma",
+  level_a = "Low-grade",
+  level_b = "Normal",
+  condition_level = "spot",
+  agg = "median",
+  min_spots = 30
+)
+
+low_grade_metadata <- combined_final@meta.data |>
+  filter(Adenoma == "Low-grade")
+pseudotime_large_vs_small_lowgrade <- compare_score_clusters_paired(
+  low_grade_metadata,
+  score_col = "dpt_pseudotime",
+  sample_col = "Sample_ID",
+  condition_col = "LargeSmall",
+  level_a = "Large",
+  level_b = "Small",
+  condition_level = "sample",
+  agg = "median",
+  min_spots = 30
+)
+
+continuous_score_tests <- list(
+  senepy_c2_vs_c3 = senepy_c2_vs_c3,
+  senepy_c4_vs_c3 = senepy_c4_vs_c3,
+  senepy_c4_vs_c2 = senepy_c4_vs_c2,
+  pseudotime_lowgrade_vs_normal = pseudotime_lowgrade_vs_normal,
+  pseudotime_large_vs_small_lowgrade = pseudotime_large_vs_small_lowgrade
+)
+
+senepy_primary_p_adjusted <- p.adjust(
+  c(senepy_c2_vs_c3$test$p.value, senepy_c4_vs_c3$test$p.value),
+  method = "bonferroni"
+)
+
+continuous_test_summary <- tibble(
+  comparison = names(continuous_score_tests),
+  score = c("Senepy", "Senepy", "Senepy", "dpt_pseudotime", "dpt_pseudotime"),
+  condition = c(
+    "combined_cluster", "combined_cluster", "combined_cluster", "Adenoma", "LargeSmall"
+  ),
+  level_a = c("2", "4", "4", "Low-grade", "Large"),
+  level_b = c("3", "3", "2", "Normal", "Small"),
+  mode = vapply(continuous_score_tests, `[[`, character(1), "mode"),
+  n_a = vapply(
+    continuous_score_tests,
+    function(x) if (is.null(x$n_a)) x$n_samples else x$n_a,
+    numeric(1)
+  ),
+  n_b = vapply(
+    continuous_score_tests,
+    function(x) if (is.null(x$n_b)) x$n_samples else x$n_b,
+    numeric(1)
+  ),
+  median_a = vapply(continuous_score_tests, function(x) x$ave_median[[1]], numeric(1)),
+  median_b = vapply(continuous_score_tests, function(x) x$ave_median[[2]], numeric(1)),
+  median_difference_a_minus_b = vapply(continuous_score_tests, `[[`, numeric(1), "diff_median"),
+  statistic = vapply(continuous_score_tests, function(x) unname(x$test$statistic), numeric(1)),
+  p_value = vapply(continuous_score_tests, function(x) x$test$p.value, numeric(1)),
+  p_adjusted_bonferroni = c(senepy_primary_p_adjusted, NA_real_, NA_real_, NA_real_)
+)
+
+write_csv(continuous_test_summary, here("results", "tables", "continuous_score_tests.csv"))
+saveRDS(continuous_score_tests, here("results", "tables", "continuous_score_tests.rds"))
+continuous_test_summary
+
+test_adenoma <- run_comp_tests(
+  combined_final@meta.data,
+  sample_col = "Sample_ID",
+  condition_col = "Adenoma",
+  category_col = "combined_cluster",
+  condition_level = "spot",
+  condition_keep = c("Normal", "Low-grade"),
+  n_perm = 999,
+  seed = 1,
+  paired_only = TRUE
+)
+
+test_largesmall <- run_comp_tests(
+  combined_final@meta.data,
+  sample_col = "Sample_ID",
+  condition_col = "LargeSmall",
+  category_col = "combined_cluster",
+  condition_level = "sample",
+  condition_keep = c("Small", "Large"),
+  n_perm = 999,
+  seed = 1,
+  paired_only = FALSE
+)
+
+write_composition_outputs <- function(result, comparison_name) {
+  output_prefix <- here("results", "tables", paste0("cluster_composition_", comparison_name))
+  write_csv(result$tab, paste0(output_prefix, "_proportions.csv"))
+  write_csv(result$posthoc, paste0(output_prefix, "_posthoc.csv"))
+  write_csv(
+    rownames_to_column(as.data.frame(result$permanova), "term"),
+    paste0(output_prefix, "_permanova.csv")
+  )
+  writeLines(
+    capture.output(result$betadisper_permutest),
+    paste0(output_prefix, "_betadisper.txt")
+  )
+  invisible(result)
+}
+
+write_composition_outputs(test_adenoma, "adenoma")
+write_composition_outputs(test_largesmall, "largesmall")
+saveRDS(
+  list(adenoma = test_adenoma, largesmall = test_largesmall),
+  here("results", "tables", "cluster_composition_tests.rds")
+)
+
+test_adenoma$permanova
+test_adenoma$betadisper_permutest
+test_adenoma$posthoc
+test_largesmall$permanova
+test_largesmall$betadisper_permutest
+test_largesmall$posthoc
 ```
 
 # Public single-cell validation

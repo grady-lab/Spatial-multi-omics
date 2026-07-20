@@ -54,11 +54,12 @@ save_plot(p2b, file.path(figure_dir, "Figure2B_spatial_clusters.pdf"), 8, 6)
 
 ```{r figure-2-markers}
 rna_markers <- c(
-  "LGR5", "ASCL2", "OLFM4", "AXIN2",
-  "MKI67", "TOP2A", "PCNA",
-  "CDKN1A", "CDKN2B", "TP53", "GLB1",
-  "SLC26A3", "CA2", "CLCA1", "TFF3", "CEACAM7",
-  "COL3A1", "DES", "GREM1", "TRAC", "MS4A1", "PTPRC"
+  "LGR5","ASCL2","OLFM4","AXIN2","EPHB2", "ALDH1A1", "ALCAM",     # stemness
+  "MKI67","TOP2A", "PCNA",              # proliferation
+  "CDKN1A","CDKN2B","TP53", "GLB1", "CXCL1",    # senescence / stress
+  "SLC26A3","CA2","CLCA1","TFF3","CEACAM7",  # normal/differentiated epithelium
+  "COL3A1","DES","GREM1",        # stromal
+  "TRAC","MS4A1", "PTPRC"        # immune
 )
 DefaultAssay(combined_final) <- "Spatial"
 p2c_rna <- DotPlot(combined_final, features = rna_markers, group.by = "combined_cluster") +

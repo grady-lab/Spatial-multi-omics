@@ -18,6 +18,6 @@
 | GDF15-adjusted spatial lag correlation | `R/spatial_statistics.R`: `spatial_lag_correlations()`, `compare_before_after()` |
 | CD8 spatial ring-density analysis | `R/spatial_statistics.R`: `prepare_cd8_neighborhood_data()`, `add_tissue_components()`, `cd8_density_by_source()`; `Rmd/Visium_analyses.Rmd`, `cd8-neighborhood` section |
 | Adenoma radial distance from the tract surface | `R/spatial_statistics.R`: `build_staffli_from_spaceranger()`, `separate_tissue_islands_semla()`, `distance_to_surface()`, `summarize_distance_bins()`; `Rmd/Visium_analyses.Rmd`, `tract-surface-distance` section |
-| Continuous and compositional statistics | `R/spatial_statistics.R`: `compare_sample_summaries()`, `composition_tests()` |
+| Continuous and categorical-proportion statistics | `R/spatial_statistics.R`: `compare_score_clusters_paired()`, `run_comp_tests()`; `Rmd/Visium_analyses.Rmd`, `sample-level-statistics` section |
 | Public scRNA-seq validation | `Rmd/Visium_analyses.Rmd`, validation section |
 | Main and supplementary figures | `Rmd/Clean_plotting.Rmd`, `Rmd/Supple_plotting.Rmd` |
