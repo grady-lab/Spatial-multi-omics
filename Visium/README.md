@@ -9,9 +9,6 @@ Rmd/
   Visium_analyses.Rmd        Core Visium analysis, scores, and statistical tests
   Clean_plotting.Rmd         Main-figure code
   Supple_plotting.Rmd        Supplementary-figure code
-# Please find all the figures in the Visium analyses at
-  Clean_plotting.html        https://htmlpreview.github.io/?https://github.com/grady-lab/Spatial-multi-omics/blob/main/Visium/Rmd/Clean_plotting.html
-  Supple_plotting.html       https://htmlpreview.github.io/?https://github.com/grady-lab/Spatial-multi-omics/blob/main/Visium/Rmd/Supple_plotting.html
 R/
   preprocessing.R            Visium RNA/ADT loading, QC, integration, and mapping
   scrna_reference.R          Public scRNA-seq reference curation and H5AD export
@@ -30,6 +27,12 @@ data/                        Input contract; large data are supplied separately
 results/                     Generated tables and figures
 METHODS_CODE_MAP.md          Mapping from the Methods section to executable code
 ```
+
+## Please find all the figures in the Visium analyses at
+Rmd/
+  Clean_plotting.html        https://htmlpreview.github.io/?https://github.com/grady-lab/Spatial-multi-omics/blob/main/Visium/Rmd/Clean_plotting.html
+  Supple_plotting.html       https://htmlpreview.github.io/?https://github.com/grady-lab/Spatial-multi-omics/blob/main/Visium/Rmd/Supple_plotting.html
+
 
 ## Reproducing the analysis
 
