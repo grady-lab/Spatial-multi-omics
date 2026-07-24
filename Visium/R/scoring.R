@@ -56,6 +56,11 @@ add_cell_cycle_scores <- function(object, assay = "Spatial") {
     g2m.features = Seurat::cc.genes.updated.2019$g2m.genes,
     set.ident = FALSE
   )
+  object$cell_cycle_seurat <- factor(
+    object$Phase,
+    levels = c("G1", "S", "G2M")
+  )
+  object$Phase <- NULL
   object <- ccAFv2::PredictCellCycle(
     object,
     species = "human",
@@ -122,6 +127,9 @@ add_diffusion_map <- function(
     name = "diffmap"
 ) {
   embedding <- Seurat::Embeddings(object, reduction = reduction)[, dims, drop = FALSE]
+  old_matrix_warning <- getOption("Matrix.warnDeprecatedCoerce")
+  options(Matrix.warnDeprecatedCoerce = 0)
+  on.exit(options(Matrix.warnDeprecatedCoerce = old_matrix_warning), add = TRUE)
   dm <- destiny::DiffusionMap(embedding, sigma = sigma)
   dc <- destiny::eigenvectors(dm)[, components, drop = FALSE]
   colnames(dc) <- paste0("DC", seq_len(ncol(dc)))

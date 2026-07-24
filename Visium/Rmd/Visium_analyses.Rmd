@@ -11,12 +11,23 @@ params:
   rebuild_staffli: false
   cores: 24
 editor_options:
-  chunk_output_type: console
+  chunk_output_type: inline
 ---
 
 This notebook contains only analyses reported in the Methods. Exploratory, deprecated, and figure-only code is intentionally omitted. Set `execute: true` when the inputs described in `data/README.md` are available.
 
 ```{r setup, include=FALSE}
+
+if (!exists("params", inherits = FALSE)) {
+  params <- list(
+    execute = TRUE,
+    run_preprocessing = FALSE,
+    build_scrna_reference = FALSE,
+    rebuild_staffli = FALSE,
+    cores = 24
+  )
+}
+
 knitr::opts_chunk$set(
   echo = TRUE,
   eval = isTRUE(params$execute),
@@ -84,7 +95,10 @@ if (isTRUE(params$run_preprocessing)) {
   combined_final <- merge_reference_and_query(integrated$reference, mapped_query)
   qs::qsave(combined_final, here("data", "derived", "visium_integrated.qs"), preset = "high")
 } else {
-  combined_final <- qs::qread(here("data", "derived", "visium_integrated.qs"))
+  combined_final <- read_analysis_archive(
+    here("data", "derived", "visium_integrated.qs")
+  )
+  combined_final <- prepare_integrated_checkpoint(combined_final)
 }
 ```
 
@@ -102,7 +116,7 @@ cluster_markers <- FindAllMarkers(
   group.by = "combined_cluster"
 ) |>
   filter(p_val_adj < 0.05, !grepl("^MT-", gene)) |>
-  mutate(delta_pct = pct.1 - pct.2)
+  mutate(delta_pct = pct.1 - pct.2) |> group_by(cluster) |> slice_head(n = 100)
 
 write_csv(cluster_markers, here("results", "tables", "cluster_markers.csv"))
 ```
@@ -125,11 +139,25 @@ combined_final <- run_irgsea(
 combined_final <- copy_ucell_scores(
   combined_final,
   c(
-    SenMayo = "SenMayo",
-    IEX = "IEX",
-    Stem_Signature = "Stem_Signature"
+    SenMayo = "SAUL_SEN_MAYO",
+    IEX = "IEX_score",
+    Stem_Signature = "Stem_Signature",
+    E2F_TARGETS = "HALLMARK_E2F_TARGETS",
+    MYC_TARGETS = "HALLMARK_MYC_TARGETS_V1",
+    G2M_CHECKPOINT = "HALLMARK_G2M_CHECKPOINT",
+    TGF_BETA_SIGNALING = "HALLMARK_TGF_BETA_SIGNALING",
+    WNT_BETA_CATENIN_SIGNALING = "HALLMARK_WNT_BETA_CATENIN_SIGNALING",
+    P53_PATHWAY = "HALLMARK_P53_PATHWAY",
+    INFLAMMATORY_RESPONSE = "HALLMARK_INFLAMMATORY_RESPONSE"
   )
 )
+
+result.dge <- irGSEA.integrate(object = combined_final, 
+                               group.by = "combined_cluster",
+                               metadata = NULL, col.name = NULL,
+                               method = c("AUCell","UCell","singscore",
+                                           "JASMINE"))
+saveRDS(result.dge,here("data", "derived", "result.dge.rds"))
 ```
 
 ```{r senepy-cell-cycle-cytotrace}
@@ -209,12 +237,11 @@ epithelial <- add_diffusion_map(
   orient_by = "dpt_pseudotime",
   orient_component = 1
 )
-qs::qsave(epithelial, here("data", "derived", "epithelial_diffusion_map.qs"))
 ```
 
 # Public scRNA-seq reference for Cell2location
 
-The Cell2location reference is derived from the integrated public `marteau_TA_updated.qs` object, not from the two Lau adenoma validation cohorts analyzed below. Missing primary annotations are filled from `cell_type_fine`; fibroblast, endothelial, cycling T-cell, cDC, and monocyte labels are consolidated; the 12 explicitly excluded rare or unwanted annotations are removed; and dysplastic labels are replaced by the curated `my_annotationV2` labels. `Dysplastic_Normal` cells are then excluded and `make.names()` is applied to the final labels used by Cell2location.
+The Cell2location reference is derived from the integrated public `marteau_Cancer_Cell_2026` object (https://crc.icbi.at/), not from the two Lau adenoma validation cohorts analyzed below. Missing primary annotations are filled from `cell_type_fine`; fibroblast, endothelial, cycling T-cell, cDC, and monocyte labels are consolidated; the 12 explicitly excluded rare or unwanted annotations are removed; and dysplastic labels are replaced by the curated `my_annotationV2` labels. `Dysplastic_Normal` cells are then excluded and `make.names()` is applied to the final labels used by Cell2location.
 
 The realized reference contains 52,871 cells, 24,593 genes, 66 samples, and 28 final annotations. `validate_marteau_reference()` checks all of these values and the per-annotation cell counts against the H5AD used in the analysis. The H5AD export places raw RNA counts in `X` and retains `nCount_RNA`, `nFeature_RNA`, the original barcode index, `sample_id`, `my_annotation`, and `study_id` in `obs`. Because the original export densifies the full count matrix and requires substantial memory, it runs only when `build_scrna_reference: true`.
 
@@ -222,6 +249,24 @@ The realized reference contains 52,871 cells, 24,593 genes, 66 samples, and 28 f
 if (isTRUE(params$build_scrna_reference)) {
   marteau_ta <- qs::qread(here("data", "reference", "marteau_TA_updated.qs"))
   scrna_reference <- curate_marteau_reference(marteau_ta)
+
+  if (!"Stem_Signature_UCell" %in% colnames(scrna_reference@meta.data)) {
+    scrna_reference <- UCell::AddModuleScore_UCell(
+      scrna_reference,
+      features = list(Stem_Signature = gene_sets$Stem_Signature),
+      assay = "RNA",
+      BPPARAM = BiocParallel::MulticoreParam(workers = params$cores)
+    )
+  }
+  if (!all(c("epithelial_cell_score_0", "Universal_score") %in%
+      colnames(scrna_reference@meta.data))) {
+    scrna_reference <- Calculate_senepy(
+      scrna_reference,
+      assay = "RNA",
+      layer = "data"
+    )
+  }
+
   reference_counts <- validate_marteau_reference(scrna_reference)
 
   write_csv(
@@ -380,37 +425,199 @@ gdf15_de
 
 # Bivariate local Moran's I
 
+Five bivariate local Moran analyses are calculated with six-nearest-neighbor spatial weights: GDF15 with Senepy, ADT CD8A, Stem Signature, or Cell2location CD8 T-cell abundance, and Senepy with Stem Signature. The ADT assay is unavailable for some spots; those spots remain missing for the GDF15-ADT analysis. Negative DSB-normalized ADT-CD8A values are clipped to zero before calculating that pair. Each function call returns a metadata data frame, and the five data frames are added to the complete Visium object together after barcode alignment.
+
 ```{r local-moran}
-moran_sen_stem <- bivar_local_moran_seurat(
-  combined_final,
-  target1 = "Senepy",
-  target2 = "Stem_Signature",
-  k = 6,
-  add_to_object = FALSE,
-  verbose = FALSE
+moran_specifications <- list(
+  GDF15_Senepy = list(
+    target1 = "GDF15",
+    target2 = "Senepy",
+    assay1 = "Spatial",
+    assay2 = NULL,
+    clip_neg_to_zero = character(0),
+    output_file = "local_moran_gdf15_senepy.csv"
+  ),
+  GDF15_ADT_CD8A = list(
+    target1 = "GDF15",
+    target2 = "ADT-CD8A",
+    assay1 = "Spatial",
+    assay2 = "ADT_dsb_by_slide",
+    clip_neg_to_zero = "ADT-CD8A",
+    output_file = "local_moran_gdf15_cd8.csv"
+  ),
+  GDF15_Stem_Signature = list(
+    target1 = "GDF15",
+    target2 = "Stem_Signature",
+    assay1 = "Spatial",
+    assay2 = NULL,
+    clip_neg_to_zero = character(0),
+    output_file = "local_moran_gdf15_stem_signature.csv"
+  ),
+  Senepy_Stem_Signature = list(
+    target1 = "Senepy",
+    target2 = "Stem_Signature",
+    assay1 = NULL,
+    assay2 = NULL,
+    clip_neg_to_zero = character(0),
+    output_file = "local_moran_senescence_stemness.csv"
+  ),
+  GDF15_CD8_T = list(
+    target1 = "GDF15",
+    target2 = "CD8.T",
+    assay1 = "Spatial",
+    assay2 = NULL,
+    clip_neg_to_zero = character(0),
+    output_file = "local_moran_gdf15_cd8_t.csv"
+  )
 )
-moran_gdf15_cd8 <- bivar_local_moran_seurat(
-  combined_final,
-  target1 = "GDF15",
-  target2 = "ADT-CD8A",
-  assay1 = "Spatial",
-  assay2 = "ADT_dsb",
-  k = 6,
-  clip_neg_to_zero = "ADT-CD8A",
-  add_to_object = FALSE,
-  verbose = FALSE
+
+moran_results <- purrr::map(moran_specifications, function(specification) {
+  bivar_local_moran_seurat(
+    combined_final,
+    target1 = specification$target1,
+    target2 = specification$target2,
+    assay1 = specification$assay1,
+    assay2 = specification$assay2,
+    k = 6,
+    clip_neg_to_zero = specification$clip_neg_to_zero,
+    add_to_object = FALSE,
+    verbose = FALSE
+  )
+})
+
+moran_metadata <- do.call(cbind, unname(moran_results))
+stopifnot(
+  identical(rownames(moran_metadata), colnames(combined_final)),
+  !anyDuplicated(colnames(moran_metadata))
 )
-write_csv(
-  rownames_to_column(moran_sen_stem, "barcode"),
-  here("results", "tables", "local_moran_senescence_stemness.csv")
+combined_final <- AddMetaData(combined_final, moran_metadata)
+
+purrr::walk2(moran_results, moran_specifications, function(result, specification) {
+  write_csv(
+    rownames_to_column(result, "barcode"),
+    here("results", "tables", specification$output_file)
+  )
+})
+```
+
+The source composition-testing loop is applied to all five Moran classifications in two ways. For the sample-level size comparison, it retains low-grade spots with a non-missing classification other than `Not sig`, removes samples with 10 or fewer retained spots, and compares Small and Large adenomas as independent groups. For the regional comparison, it retains Normal and Low-grade spots with an informative Moran classification and performs a paired, within-sample comparison of the two pathology regions.
+
+```{r local-moran-composition-tests}
+moran_class_columns <- paste0("Cluster_Moran_", names(moran_specifications))
+stopifnot(all(moran_class_columns %in% colnames(combined_final@meta.data)))
+
+moran_largesmall_tests <- stats::setNames(vector("list", length(moran_class_columns)), moran_class_columns)
+moran_adenoma_tests <- stats::setNames(vector("list", length(moran_class_columns)), moran_class_columns)
+
+write_moran_composition_outputs <- function(test, output_stem) {
+  write_csv(test$tab, paste0(output_stem, "_proportions.csv"))
+  write_csv(test$posthoc, paste0(output_stem, "_posthoc.csv"))
+  write_csv(
+    rownames_to_column(as.data.frame(test$permanova), "term"),
+    paste0(output_stem, "_permanova.csv")
+  )
+  writeLines(
+    capture.output(test$betadisper_permutest),
+    paste0(output_stem, "_betadisper.txt")
+  )
+  invisible(test)
+}
+
+for (moran_column in moran_class_columns) {
+  moran_largesmall_data <- combined_final@meta.data |>
+    tibble::rownames_to_column("barcode") |>
+    dplyr::filter(
+      .data$Adenoma == "Low-grade",
+      !is.na(.data[[moran_column]]),
+      .data[[moran_column]] != "Not sig"
+    )
+
+  eligible_samples <- moran_largesmall_data |>
+    dplyr::count(.data$Sample_ID, name = "n_spots") |>
+    dplyr::filter(.data$n_spots > 10) |>
+    dplyr::pull(.data$Sample_ID)
+
+  moran_largesmall_data <- moran_largesmall_data |>
+    dplyr::filter(.data$Sample_ID %in% eligible_samples)
+
+  largesmall_test <- run_comp_tests(
+    moran_largesmall_data,
+    sample_col = "Sample_ID",
+    condition_col = "LargeSmall",
+    category_col = moran_column,
+    condition_level = "sample",
+    condition_keep = c("Small", "Large"),
+    n_perm = 999,
+    seed = 1,
+    paired_only = FALSE
+  )
+
+  moran_largesmall_tests[[moran_column]] <- list(
+    proportions = largesmall_test$tab,
+    permanova = largesmall_test$permanova,
+    betadisper = largesmall_test$betadisper_permutest,
+    posthoc = largesmall_test$posthoc
+  )
+
+  largesmall_output_stem <- here(
+    "results",
+    "tables",
+    paste0("local_moran_largesmall_", tolower(sub("^Cluster_Moran_", "", moran_column)))
+  )
+  write_moran_composition_outputs(largesmall_test, largesmall_output_stem)
+
+  moran_adenoma_data <- combined_final@meta.data |>
+    tibble::rownames_to_column("barcode") |>
+    dplyr::filter(
+      .data$Adenoma %in% c("Normal", "Low-grade"),
+      !is.na(.data[[moran_column]]),
+      .data[[moran_column]] != "Not sig"
+    )
+
+  adenoma_test <- run_comp_tests(
+    moran_adenoma_data,
+    sample_col = "Sample_ID",
+    condition_col = "Adenoma",
+    category_col = moran_column,
+    condition_level = "spot",
+    condition_keep = c("Normal", "Low-grade"),
+    n_perm = 999,
+    seed = 1,
+    paired_only = TRUE
+  )
+
+  moran_adenoma_tests[[moran_column]] <- list(
+    proportions = adenoma_test$tab,
+    permanova = adenoma_test$permanova,
+    betadisper = adenoma_test$betadisper_permutest,
+    posthoc = adenoma_test$posthoc
+  )
+
+  adenoma_output_stem <- here(
+    "results",
+    "tables",
+    paste0("local_moran_adenoma_", tolower(sub("^Cluster_Moran_", "", moran_column)))
+  )
+  write_moran_composition_outputs(adenoma_test, adenoma_output_stem)
+}
+
+saveRDS(
+  moran_largesmall_tests,
+  here("results", "tables", "local_moran_largesmall_tests.rds")
 )
-write_csv(
-  rownames_to_column(moran_gdf15_cd8, "barcode"),
-  here("results", "tables", "local_moran_gdf15_cd8.csv")
+saveRDS(
+  moran_adenoma_tests,
+  here("results", "tables", "local_moran_adenoma_tests.rds")
+)
+saveRDS(
+  list(largesmall = moran_largesmall_tests, adenoma = moran_adenoma_tests),
+  here("results", "tables", "local_moran_composition_tests.rds")
 )
 ```
 
 # Partial spatial correlation
+
+For each sample, the before-versus-after GDF15 comparison is performed on Fisher-transformed Spearman correlations. The exact paired Wilcoxon signed-rank test and the sign-flip permutation test therefore use `z = atanh(rho)`, while raw Spearman correlations and their difference are retained for interpretation and plotting. The size-stratified tests use the same exact Wilcoxon procedure; the Small-only result is considered exploratory because it contains five paired samples.
 
 ```{r partial-spatial-correlation}
 lag_data <- spatial_metadata(
@@ -445,19 +652,45 @@ partial_spatial_test <- compare_before_after(
   before_gdf15$per_sample,
   after_gdf15$per_sample,
   permutations = 999,
-  seed = 1
+  seed = 1,
+  label = "x_vs_Wy (smoothed)"
 )
 write_csv(partial_spatial_test$table, here("results", "tables", "partial_spatial_correlation.csv"))
+write_csv(
+  partial_spatial_test$stratified,
+  here("results", "tables", "partial_spatial_correlation_stratified.csv")
+)
+write_csv(
+  tibble(
+    label = partial_spatial_test$label,
+    n_pairs = nrow(partial_spatial_test$table),
+    wilcox_statistic = unname(partial_spatial_test$paired_wilcox$statistic),
+    wilcox_p = partial_spatial_test$paired_wilcox$p.value,
+    paired_perm_p = partial_spatial_test$paired_perm_p,
+    median_delta_z = partial_spatial_test$median_delta_z,
+    median_rho_before = partial_spatial_test$median_rho_before,
+    median_rho_after = partial_spatial_test$median_rho_after
+  ),
+  here("results", "tables", "partial_spatial_correlation_summary.csv")
+)
+saveRDS(
+  partial_spatial_test,
+  here("results", "tables", "partial_spatial_correlation_test.rds")
+)
+
+partial_spatial_test$paired_wilcox
+partial_spatial_test$paired_perm_p
+partial_spatial_test$stratified
 ```
 
 # CD8 neighborhood analysis
 
-This section reproduces the active analysis under `# CD8 Spatial distance` in the working `My_Visium.Rmd`. The public assay `ADT_dsb` is the within-slide DSB-normalized assay named `ADT_dsb_by_slide` in the source notebook. GDF15 and the composite CD8 gate are standardized across all ADT-complete spots within each sample before restricting to normal and low-grade epithelial clusters C0, C1, C2, C3, C4, C6, and C8. CD8-positive spots require z-scored CD3E and CD8A of at least 0.5 and the maximum z-scored CD45RA/CD45RO value of at least zero. Epithelial tissue components use a 1.6-spot-unit connection radius, and CD8 density is measured within a two-spot-unit ring in the same component. The first comparison uses at least five GDF15-high source spots per pathology region; the second uses at least ten GDF15-high or GDF15-low source spots per region and excludes pilot samples. The exploratory nearest-distance calculation is commented out in the source, so the two reported outputs reproduce the active ring-density analyses.
+This section reproduces the active analysis under `# CD8 Spatial distance` in the working `My_Visium.Rmd`. The public assay `ADT_dsb_by_slide` is the within-slide DSB-normalized assay named `ADT_dsb_by_slide` in the source notebook. GDF15 and the composite CD8 gate are standardized across all ADT-complete spots within each sample before restricting to normal and low-grade epithelial clusters C0, C1, C2, C3, C4, C6, and C8. CD8-positive spots require z-scored CD3E and CD8A of at least 0.5 and the maximum z-scored CD45RA/CD45RO value of at least zero. Epithelial tissue components use a 1.6-spot-unit connection radius, and CD8 density is measured within a two-spot-unit ring in the same component. The first comparison uses at least five GDF15-high source spots per pathology region; the second uses at least ten GDF15-high or GDF15-low source spots per region and excludes pilot samples. The exploratory nearest-distance calculation is commented out in the source, so the two reported outputs reproduce the active ring-density analyses.
 
 ```{r cd8-neighborhood}
 cd8_data <- prepare_cd8_neighborhood_data(
   combined_final,
-  adt_assay = "ADT_dsb"
+  adt_assay = "ADT_dsb_by_slide"
 )
 cd8_region <- cd8_density_by_source(
   cd8_data,
@@ -519,13 +752,15 @@ if (isTRUE(params$rebuild_staffli)) {
     preset = "high"
   )
 } else {
-  surface_object <- qs::qread(here("data", "derived", "visium_semla.qs"))
+  surface_object <- read_analysis_archive(
+    here("data", "derived", "visium_semla.qs")
+  )
 }
 
 surface_object <- separate_tissue_islands_semla(surface_object)
 staffli_coordinates <- surface_object@tools$Staffli@meta_data |>
   as_tibble() |>
-  select(barcode, pxl_col_in_fullres, pxl_row_in_fullres)
+  dplyr::select(barcode, pxl_col_in_fullres, pxl_row_in_fullres)
 
 surface_annotations <- surface_annotations |>
   transmute(
@@ -539,7 +774,7 @@ surface_annotations <- surface_annotations |>
   )
 surface_data <- surface_object@meta.data |>
   rownames_to_column("barcode") |>
-  select(barcode, Sample_ID, Adenoma, tissue_island, Senepy, Stem_Signature) |>
+  dplyr::select(barcode, Sample_ID, Adenoma, tissue_island, Senepy, Stem_Signature) |>
   mutate(raw_barcode = str_extract(barcode, "[ACGT]{16}-[0-9]+")) |>
   left_join(staffli_coordinates, by = "barcode") |>
   left_join(
@@ -578,7 +813,7 @@ write_csv(senescence_distance_bins, here("results", "tables", "surface_distance_
 
 All continuous-value comparisons use `compare_score_clusters_paired()`. Spot-level conditions are summarized within each sample and compared with a paired Wilcoxon signed-rank test; sample-level conditions are summarized per sample and compared with an unpaired Wilcoxon rank-sum test. The reported effect is the median for `level_a` minus the median for `level_b`.
 
-The Senepy comparisons correspond to the sample-level cluster summary plotted in `Supple_plotting.Rmd`. Pseudotime is compared between paired Low-grade and Normal regions, and between Large and Small adenomas after restricting the latter analysis to Low-grade spots. Every continuous comparison uses per-sample medians and requires at least 30 spots in an analyzed sample/condition stratum. Bonferroni-adjusted p-values are reported for the source notebook's two primary Senepy contrasts, cluster 2 versus 3 and cluster 4 versus 3.
+The Senepy comparisons correspond to the sample-level cluster summary plotted in `Supple_plotting.Rmd`. Pseudotime is compared between paired Low-grade and Normal regions, and between Large and Small adenomas after restricting the latter analysis to Low-grade spots. Every continuous comparison uses per-sample medians and requires at least 30 spots in an analyzed sample/condition stratum. Benjamini-Hochberg-adjusted p-values are reported across the three Senepy cluster contrasts.
 
 All categorical-proportion comparisons use `run_comp_tests()`. The function forms a complete category-proportion table for every sample/condition stratum, applies the Hellinger transformation before PERMANOVA and its dispersion check, and performs category-wise Wilcoxon tests with Benjamini-Hochberg correction. Pathology is a spot-level condition, so Normal and Low-grade regions are paired within samples that contain both. Adenoma post-hoc effects are Low-grade minus Normal. Adenoma size is a sample-level condition, so Small and Large samples are compared as independent groups. The same helper can be used for other categorical outcomes, including Moran's I classifications, by changing `category_col`.
 
@@ -656,8 +891,12 @@ continuous_score_tests <- list(
 )
 
 senepy_primary_p_adjusted <- p.adjust(
-  c(senepy_c2_vs_c3$test$p.value, senepy_c4_vs_c3$test$p.value),
-  method = "bonferroni"
+  c(
+    senepy_c2_vs_c3 = senepy_c2_vs_c3$test$p.value,
+    senepy_c4_vs_c3 = senepy_c4_vs_c3$test$p.value,
+    senepy_c4_vs_c2 = senepy_c4_vs_c2$test$p.value
+  ),
+  method = "BH"
 )
 
 continuous_test_summary <- tibble(
@@ -684,12 +923,62 @@ continuous_test_summary <- tibble(
   median_difference_a_minus_b = vapply(continuous_score_tests, `[[`, numeric(1), "diff_median"),
   statistic = vapply(continuous_score_tests, function(x) unname(x$test$statistic), numeric(1)),
   p_value = vapply(continuous_score_tests, function(x) x$test$p.value, numeric(1)),
-  p_adjusted_bonferroni = c(senepy_primary_p_adjusted, NA_real_, NA_real_, NA_real_)
+  p_adjusted_bh = c(unname(senepy_primary_p_adjusted), NA_real_, NA_real_)
 )
 
 write_csv(continuous_test_summary, here("results", "tables", "continuous_score_tests.csv"))
 saveRDS(continuous_score_tests, here("results", "tables", "continuous_score_tests.rds"))
 continuous_test_summary
+
+# Supplementary Figure 4J uses the same paired, sample-level median strategy
+# for the two ADT signals. ADT-incomplete spots remain missing after the join.
+adt_region_features <- c("ADT-CD8A", "ADT-CD3E")
+adt_joined <- JoinLayers(combined_final, assay = "ADT_dsb_by_slide")
+adt_values <- FetchData(
+  adt_joined,
+  vars = adt_region_features,
+  assay = "ADT_dsb_by_slide",
+  layer = "data"
+) 
+adt_region_metadata = AddMetaData(combined_final,adt_values)
+adt_region_metadata = adt_region_metadata@meta.data|>
+  filter(Adenoma %in% c("Normal", "Low-grade"))
+
+adt_region_tests <- set_names(adt_region_features) |>
+  map(function(feature) {
+    compare_score_clusters_paired(
+      adt_region_metadata,
+      score_col = feature,
+      sample_col = "Sample_ID",
+      condition_col = "Adenoma",
+      level_a = "Low-grade",
+      level_b = "Normal",
+      condition_level = "spot",
+      agg = "median",
+      min_spots = 30
+    )
+  })
+
+adt_region_test_summary <- imap_dfr(adt_region_tests, function(result, feature) {
+  tibble(
+    feature = feature,
+    n_paired_samples = result$n_samples,
+    median_low_grade = result$ave_median[[1]],
+    median_normal = result$ave_median[[2]],
+    median_paired_difference = result$diff_median,
+    statistic = unname(result$test$statistic),
+    p_value = result$test$p.value
+  )
+})
+write_csv(
+  adt_region_test_summary,
+  here("results", "tables", "adt_region_tests.csv")
+)
+saveRDS(
+  adt_region_tests,
+  here("results", "tables", "adt_region_tests.rds")
+)
+adt_region_test_summary
 
 test_adenoma <- run_comp_tests(
   combined_final@meta.data,
@@ -756,28 +1045,84 @@ validation_objects <- list(
 )
 
 recluster_epithelium <- function(object, epithelial_cells, resolution = 0.4) {
-  subset(object, cells = epithelial_cells) |>
+  epithelial <- subset(object, cells = epithelial_cells)
+  DefaultAssay(epithelial) <- "RNA"
+  epithelial |>
     NormalizeData(verbose = FALSE) |>
     FindVariableFeatures(nfeatures = 2000, verbose = FALSE) |>
     ScaleData(verbose = FALSE) |>
-    RunPCA(npcs = 30, verbose = FALSE) |>
-    FindNeighbors(dims = 1:30, verbose = FALSE) |>
+    RunPCA() |>
+    FindNeighbors() |>
     FindClusters(resolution = resolution, algorithm = 3, verbose = FALSE) |>
     RunUMAP(dims = 1:30, seed.use = 1, verbose = FALSE)
 }
 
-validation_epithelium <- purrr::map(validation_objects, function(object) {
+score_validation_object <- function(object) {
+  cells <- rownames(object@meta.data)[
+    !is.na(object$Cell_Type) & object$Cell_Type != "SSC"
+  ]
+  object <- subset(object, cells = cells)
+  object <- run_irgsea(object, gene_sets, group_by = "Cell_Type", assay = "RNA")
+  object <- copy_ucell_scores(
+    object,
+    c(
+      Stem_Signature = "Stem_Signature",
+      IEX = "IEX_score",
+      WNT_BETA_CATENIN_SIGNALING = "HALLMARK_WNT_BETA_CATENIN_SIGNALING"
+    )
+  )
+  object <- Calculate_senepy(object, assay = "RNA", layer = "counts",binarize = T)
+  object$Senepy <- object$epithelial_cell_score_0
+  object
+}
+
+validation_objects <- purrr::map(validation_objects, score_validation_object)
+validation_epithelium <- purrr::imap(validation_objects, function(object, cohort) {
   epithelial_cells <- rownames(object@meta.data)[object$Cell_Type == "ASC"]
-  epithelial <- recluster_epithelium(object, epithelial_cells)
-  epithelial <- run_irgsea(epithelial, gene_sets, group_by = "seurat_clusters", assay = "RNA")
-  epithelial <- Calculate_senepy(epithelial, assay = "RNA", layer = "data")
-  epithelial$Senepy <- epithelial$Universal_score
-  epithelial
+  recluster_epithelium(
+    object,
+    epithelial_cells,
+    resolution = 0.4
+  )
 })
+qs::qsave(
+  validation_objects,
+  here("data", "derived", "single_cell_validation_full.qs")
+)
+
 qs::qsave(validation_epithelium, here("data", "derived", "single_cell_validation.qs"))
+
+validation_non_epi = qs::qread(here("data", "reference", "validation_non_epi.qs"))
+validation_non_epi <- Calculate_senepy(validation_non_epi, assay = "RNA", layer = "counts",binarize = T)
+
+qs::qsave(validation_non_epi, here("data", "derived", "single_cell_validation_non_epi.qs"))
 ```
 
 ```{r save-final-object}
 qs::qsave(combined_final, here("data", "derived", "visium_scored.qs"), preset = "high")
+
+# Cell2location abundances and local-Moran classifications are calculated after
+# the diffusion map. Copy those later metadata columns into the epithelial
+# object by barcode before writing the final plotting checkpoint.
+epithelial_metadata_columns <- setdiff(
+  colnames(combined_final@meta.data),
+  colnames(epithelial@meta.data)
+)
+if (length(epithelial_metadata_columns)) {
+  stopifnot(all(colnames(epithelial) %in% rownames(combined_final@meta.data)))
+  epithelial <- AddMetaData(
+    epithelial,
+    combined_final@meta.data[
+      colnames(epithelial),
+      epithelial_metadata_columns,
+      drop = FALSE
+    ]
+  )
+}
+qs::qsave(
+  epithelial,
+  here("data", "derived", "epithelial_diffusion_map.qs"),
+  preset = "high"
+)
 writeLines(capture.output(sessionInfo()), here("results", "sessionInfo.txt"))
 ```

@@ -7,61 +7,234 @@ params:
   execute: false
 ---
 
-This notebook contains the main-figure plotting code only. Statistical calculations are performed in `Visium_analyses.Rmd` and read here from saved tables.
+This notebook follows the final manuscript order for Visium Figures 2–4. Statistical calculations are performed in `Visium_analyses.Rmd`; this notebook reads the resulting objects and tables and generates the figure panels.
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE, eval = isTRUE(params$execute), message = FALSE, warning = FALSE)
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
 ```
 
-```{r libraries}
+```{r libraries, cache = FALSE}
 library(Seurat)
 library(tidyverse)
 library(qs)
 library(here)
 library(patchwork)
+library(dittoSeq)
+library(ggsci)
 source(here("R", "plotting.R"))
 
 combined_final <- qread(here("data", "derived", "visium_scored.qs"))
 epithelial <- qread(here("data", "derived", "epithelial_diffusion_map.qs"))
+cluster_composition_tests <- readRDS(
+  here("results", "tables", "cluster_composition_tests.rds")
+)
+moran_composition_tests <- readRDS(
+  here("results", "tables", "local_moran_composition_tests.rds")
+)
+
+# The diffusion map is calculated before Cell2location and local Moran's I.
+# Attach any metadata added later by barcode (including both groups of results).
+diffusion_metadata_columns <- setdiff(
+  colnames(combined_final@meta.data),
+  colnames(epithelial@meta.data)
+)
+if (length(diffusion_metadata_columns)) {
+  stopifnot(all(colnames(epithelial) %in% rownames(combined_final@meta.data)))
+  epithelial <- AddMetaData(
+    epithelial,
+    combined_final@meta.data[
+      colnames(epithelial),
+      diffusion_metadata_columns,
+      drop = FALSE
+    ]
+  )
+}
 figure_dir <- here("results", "figures", "main")
 dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
+
+atlas_examples <- c("R3_large_4", "Pilot_small_1")
+advanced_examples <- c("R4_large_1", "R4_large_2")
+main_spatial_example <- "R4_large_2"
+moran_levels <- c( "High-High","High-Low", "Low-High", "Low-Low")
+
+p_to_stars <- function(p) {
+  case_when(
+    is.na(p) ~ "",
+    p < 0.001 ~ "***",
+    p < 0.01 ~ "**",
+    p < 0.05 ~ "*",
+    TRUE ~ ""
+  )
+}
+
+plot_cluster_composition <- function(
+    metadata,
+    condition_col,
+    condition_keep,
+    posthoc = NULL
+) {
+  condition_levels <- recode(
+    condition_keep,
+    Small = "Non-Adv",
+    Large = "Advanced",
+    `Low-grade` = "Adenoma"
+  )
+  plot_data <- metadata |>
+    filter(.data[[condition_col]] %in% condition_keep) |>
+    transmute(
+      condition = recode(
+        as.character(.data[[condition_col]]),
+        Small = "Non-Adv",
+        Large = "Advanced",
+        `Low-grade` = "Adenoma"
+      ),
+      condition = factor(condition, levels = condition_levels),
+      cluster = factor(as.character(combined_cluster), levels = as.character(0:8))
+    ) |>
+    count(condition, cluster, .drop = FALSE) |>
+    group_by(condition) |>
+    mutate(proportion = n / sum(n)) |>
+    ungroup()
+
+  plot <- ggplot(plot_data, aes(condition, proportion, fill = cluster)) +
+    geom_col(width = 0.8) +
+    scale_fill_manual(values = cluster_colors, drop = FALSE) +
+    scale_y_continuous(expand = expansion(mult = c(0, 0.02))) +
+    theme_classic() +
+    labs(x = NULL, y = "Relative abundance", fill = "Cluster")
+
+  if (!is.null(posthoc)) {
+    category_col <- colnames(posthoc)[[1]]
+    annotation_data <- plot_data |>
+      filter(condition == last(condition_levels)) |>
+      arrange(cluster) |>
+      mutate(y = cumsum(proportion) - proportion / 2) |>
+      left_join(
+        posthoc |>
+          transmute(
+            cluster = as.character(.data[[category_col]]),
+            label = p_to_stars(p_adj)
+          ),
+        by = "cluster"
+      ) |>
+      filter(label != "")
+    plot <- plot + geom_text(
+      data = annotation_data,
+      aes(x = condition, y = y, label = label),
+      inherit.aes = FALSE,
+      size = 3
+    )
+  }
+  plot
+}
+
+plot_moran_composition <- function(
+    metadata,
+    class_col,
+    condition_col,
+    condition_keep,
+    posthoc = NULL
+) {
+  condition_levels <- recode(
+    condition_keep,
+    Small = "Non-Adv",
+    Large = "Advanced",
+    `Low-grade` = "Adenoma"
+  )
+  plot_data <- metadata |>
+    filter(
+      .data[[condition_col]] %in% condition_keep,
+      !is.na(.data[[class_col]]),
+      .data[[class_col]] != "Not sig"
+    ) |>
+    transmute(
+      condition = recode(
+        as.character(.data[[condition_col]]),
+        Small = "Non-Adv",
+        Large = "Advanced",
+        `Low-grade` = "Adenoma"
+      ),
+      condition = factor(condition, levels = condition_levels),
+      moran_class = factor(as.character(.data[[class_col]]), levels = moran_levels)
+    ) |>
+    count(condition, moran_class, .drop = FALSE) |>
+    group_by(condition) |>
+    mutate(proportion = n / sum(n)) |>
+    ungroup()
+
+  plot <- ggplot(plot_data, aes(condition, proportion, fill = moran_class)) +
+    geom_col(width = 0.8) +
+    scale_fill_manual(values = moran_colors, drop = FALSE) +
+    scale_y_continuous(expand = expansion(mult = c(0, 0.02))) +
+    theme_classic() +
+    labs(x = NULL, y = "Relative abundance", fill = NULL)
+
+  if (!is.null(posthoc)) {
+    category_col <- colnames(posthoc)[[1]]
+    annotation_data <- plot_data |>
+      filter(condition == last(condition_levels)) |>
+      arrange(moran_class) |>
+      mutate(y = cumsum(proportion) - proportion / 2) |>
+      left_join(
+        posthoc |>
+          transmute(
+            moran_class = as.character(.data[[category_col]]),
+            label = p_to_stars(p_adj)
+          ),
+        by = "moran_class"
+      ) |>
+      filter(label != "")
+    plot <- plot + geom_text(
+      data = annotation_data,
+      aes(x = condition, y = y, label = label),
+      inherit.aes = FALSE,
+      color = "white",
+      size = 3
+    )
+  }
+  plot
+}
 ```
 
-# Figure 2: multimodal atlas
+# Figure 2: Integrated multimodal annotation
 
-```{r figure-2-umap}
-p2a <- DimPlot(
+## Figure 2A: integrated clusters
+
+```{r figure-2a-clusters}
+p2a_umap <- DimPlot(
   combined_final,
   reduction = "wnn.umap",
   group.by = "combined_cluster",
-  cols = cluster_colors,
-  label = TRUE
+  cols = cluster_colors
 ) + theme_void()
-save_plot(p2a, file.path(figure_dir, "Figure2A_cluster_umap.pdf"), 5, 4)
-```
 
-```{r figure-2-spatial}
-main_samples <- c("R3_large_3", "R3_large_4", "R2_small_1", "Pilot_small_1")
-p2b <- plot_spatial_samples(
+p2a_spatial <- plot_spatial_samples(
   combined_final,
   group_by = "combined_cluster",
-  samples = main_samples,
+  samples = atlas_examples,
   colors = cluster_colors,
-  ncol = 2
+  ncol = 1
 )
-save_plot(p2b, file.path(figure_dir, "Figure2B_spatial_clusters.pdf"), 8, 6)
+
+p2a <- p2a_umap | p2a_spatial
+p2a
+save_plot(p2a, file.path(figure_dir, "Figure2A_clusters.pdf"), 9, 6)
 ```
 
-```{r figure-2-markers}
+## Figure 2B: curated RNA markers
+
+The marker classes and plotting function reproduce `Scripts/Figure 2B.R`.
+
+```{r figure-2b-markers}
 rna_markers <- c(
-  "LGR5","ASCL2","OLFM4","AXIN2","EPHB2", "ALDH1A1", "ALCAM",     # stemness
-  "MKI67","TOP2A", "PCNA",              # proliferation
-  "CDKN1A","CDKN2B","TP53", "GLB1", "CXCL1",    # senescence / stress
-  "SLC26A3","CA2","CLCA1","TFF3","CEACAM7",  # normal/differentiated epithelium
-  "COL3A1","DES","GREM1",        # stromal
-  "TRAC","MS4A1", "PTPRC"        # immune
+  "LGR5", "ASCL2", "OLFM4", "AXIN2", "EPHB2", "ALDH1A1", "ALCAM",
+  "MKI67", "TOP2A", "PCNA",
+  "CDKN1A", "CDKN2B", "TP53", "GLB1", "CXCL1",
+  "SLC26A3", "CA2", "CLCA1", "TFF3", "CEACAM7",
+  "COL3A1", "DES", "GREM1",
+  "TRAC", "MS4A1", "PTPRC"
 )
-rna_marker_classes <- tibble::tibble(
+rna_marker_classes <- tibble(
   features.plot = rna_markers,
   class = c(
     rep("Stemness", 7),
@@ -72,8 +245,9 @@ rna_marker_classes <- tibble::tibble(
     rep("Immune", 3)
   )
 )
+
 DefaultAssay(combined_final) <- "Spatial"
-p2c_rna <- DotPlot_by_class_horizontal(
+p2b <- DotPlot_by_class_horizontal(
   object = combined_final,
   features = rna_markers,
   feature_class = rna_marker_classes,
@@ -81,205 +255,660 @@ p2c_rna <- DotPlot_by_class_horizontal(
   col.mid = "#F5F6F6",
   col.high = "#67001F"
 )
+p2b
+save_plot(p2b, file.path(figure_dir, "Figure2B_RNA_markers.pdf"), 8, 6)
+```
 
-adt_markers <- c(
-  "ADT-EPCAM", "ADT-PECAM1", "ADT-VIM", "ADT-ACTA2", "ADT-PTPRC",
-  "ADT-CD3E", "ADT-CD4", "ADT-CD8A", "ADT-CD19", "ADT-MS4A1",
-  "ADT-CD68", "ADT-CD163", "ADT-PDCD1", "ADT-CD274"
+## Figure 2C: pathology annotations
+
+```{r figure-2c-pathology}
+p2c_umap <- DimPlot(
+  combined_final,
+  reduction = "wnn.umap",
+  group.by = "Adenoma",
+  cols = region_colors
+) + theme_void()
+
+p2c_spatial <- plot_spatial_samples(
+  combined_final,
+  group_by = "Adenoma",
+  samples = atlas_examples,
+  colors = region_colors,
+  ncol = 1
 )
-DefaultAssay(combined_final) <- "ADT_dsb"
-p2c_adt <- DotPlot(combined_final, features = adt_markers, group.by = "combined_cluster") +
-  RotatedAxis() + theme_classic() + labs(x = NULL, y = NULL)
-save_plot(p2c_rna, file.path(figure_dir, "Figure2C_RNA_markers.pdf"), 8, 5)
-save_plot(p2c_adt, file.path(figure_dir, "Figure2C_ADT_markers.pdf"), 8, 5)
+
+p2c <- p2c_umap | p2c_spatial
+p2c
+save_plot(p2c, file.path(figure_dir, "Figure2C_pathology.pdf"), 9, 6)
 ```
 
-```{r figure-2-cell-cycle}
-cell_cycle <- combined_final@meta.data |>
-  count(Sample_ID, combined_cluster, Phase) |>
-  group_by(Sample_ID, combined_cluster) |>
-  mutate(proportion = n / sum(n)) |>
-  ungroup()
-p2d <- ggplot(cell_cycle, aes(combined_cluster, proportion, fill = Phase)) +
-  geom_col() + theme_classic() + labs(x = "Cluster", y = "Spot fraction")
-save_plot(p2d, file.path(figure_dir, "Figure2_cell_cycle.pdf"), 6, 4)
+## Figure 2D: cluster composition
+
+The plotted proportions are descriptive spot compositions. The sample-aware tests are saved by the `sample-level-statistics` chunk of `Visium_analyses.Rmd`.
+
+```{r figure-2d-cluster-composition}
+cluster_composition_tests = read_rds(here("results","tables","cluster_composition_tests.rds"))
+p2d_size <- plot_cluster_composition(
+  combined_final@meta.data,
+  condition_col = "LargeSmall",
+  condition_keep = c("Small", "Large"),
+  posthoc = cluster_composition_tests$largesmall$posthoc
+)
+p2d_region <- plot_cluster_composition(
+  combined_final@meta.data,
+  condition_col = "Adenoma",
+  condition_keep = c("Normal", "Low-grade"),
+  posthoc = cluster_composition_tests$adenoma$posthoc
+)
+p2d <- p2d_size | p2d_region
+p2d
+save_plot(p2d, file.path(figure_dir, "Figure2D_cluster_composition.pdf"), 8, 4)
 ```
 
-# Figure 3: epithelial states and trajectories
+## Figure 2E: spatial pseudotime
 
-```{r figure-3-diffusion}
-p3a <- DimPlot(
+```{r figure-2e-spatial-pseudotime}
+p2e_umap <- SCP::FeatureDimPlot(
+  combined_final,
+  reduction = "wnn.umap",
+  features = "dpt_pseudotime"
+) + theme_void()
+p2e_spatial <- SpatialFeaturePlot(
+  combined_final,
+  features = "dpt_pseudotime",
+  images = atlas_examples,
+  ncol = 1,
+  keep.scale = "all"
+)
+p2e <- p2e_umap | p2e_spatial
+p2e
+save_plot(p2e, file.path(figure_dir, "Figure2E_spatial_pseudotime.pdf"), 9, 6)
+```
+
+## Figure 2F: pseudotime by pathology and advancement
+
+```{r figure-2f-pseudotime-pathology}
+p2f <- dittoSeq::dittoRidgePlot(
+  subset(combined_final, subset = Adenoma != "Stroma"),
+  var = "dpt_pseudotime",
+  group.by = "Adenoma",
+  split.by = "LargeSmall",
+  y.breaks = c(0, 0.5, 1)
+)
+p2f
+save_plot(p2f, file.path(figure_dir, "Figure2F_pseudotime_pathology.pdf"), 5, 4)
+```
+
+## Figure 2G: pseudotime by cluster and advancement
+
+```{r figure-2g-pseudotime-clusters}
+p2g <- dittoSeq::dittoRidgePlot(
+  combined_final,
+  var = "dpt_pseudotime",
+  group.by = "combined_cluster",
+  split.by = "LargeSmall",
+  color.panel = unname(cluster_colors),
+  y.breaks = c(0, 0.5, 1)
+)
+p2g
+save_plot(p2g, file.path(figure_dir, "Figure2G_pseudotime_clusters.pdf"), 5, 4)
+```
+
+## Figure 2H: diffusion map
+
+The diffusion-map object displays diffusion components 1 and 3.
+
+```{r figure-2h-diffusion-clusters}
+p2h <- DimPlot(
   epithelial,
   reduction = "diffmap",
   group.by = "combined_cluster",
   cols = cluster_colors
 ) + theme_void()
+p2h
+save_plot(p2h, file.path(figure_dir, "Figure2H_diffusion_clusters.pdf"), 5, 5)
+```
 
-p3b <- FeaturePlot(
+## Figure 2I: diffusion-map scores
+
+```{r figure-2i-diffusion-scores}
+p2i <- SCP::FeatureDimPlot(
   epithelial,
   reduction = "diffmap",
-  features = c("dpt_pseudotime", "Senepy", "Stem_Signature", "GDF15"),
+  features = c(
+    "dpt_pseudotime", "Senepy", "Stem_Signature",
+    "WNT_BETA_CATENIN_SIGNALING", "P53_PATHWAY", "IEX"
+  ),
   ncol = 2,
-  keep.scale = "feature"
-) & theme_void()
-save_plot(p3a, file.path(figure_dir, "Figure3A_diffusion_clusters.pdf"), 5, 4)
-save_plot(p3b, file.path(figure_dir, "Figure3B_diffusion_features.pdf"), 8, 7)
+  keep_scale = "feature",
+  show_stat = F,theme_use = SCP::theme_blank
+)
+p2i
+save_plot(p2i, file.path(figure_dir, "Figure2I_diffusion_scores.pdf"), 8, 10)
 ```
 
-```{r figure-3-spatial-scores}
-DefaultAssay(combined_final) <- "Spatial"
-p3c <- SpatialFeaturePlot(
+# Figure 3: Senescence, stemness, and spatial heterogeneity
+
+## Figure 3A: senescence and stemness UMAPs
+
+```{r figure-3a-senescence-stemness}
+p3a <- SCP::FeatureDimPlot(
   combined_final,
-  images = c("R4_large_2", "Pilot_large_2"),
-  features = c("Senepy", "Stem_Signature", "GDF15"),
-  ncol = 3,
-  keep.scale = "feature"
-)
-save_plot(p3c, file.path(figure_dir, "Figure3C_spatial_scores.pdf"), 10, 6)
-```
-
-```{r figure-3-three-way-cell2location}
-p3c_three_way <- three_way_spatial_plot(
-  combined_final,
-  features = c("Dysplastic_Epi", "CD8_T_cells", "Normal_Epi"),
-  images = "R4_large_1"
-)
-save_plot(
-  p3c_three_way,
-  file.path(figure_dir, "Figure3C_three_way_cell2location.pdf"),
-  6,
-  4
-)
-```
-
-```{r figure-3-developmental-potential}
-cytotrace_cells <- rownames(combined_final@meta.data)[
-  !is.na(combined_final$CytoTRACE2_Score)
-]
-cytotrace_epithelium <- subset(combined_final, cells = cytotrace_cells)
-p3d <- FeaturePlot(
-  cytotrace_epithelium,
   reduction = "wnn.umap",
-  features = "CytoTRACE2_Score"
-) + theme_void()
-save_plot(p3d, file.path(figure_dir, "Figure3D_cytotrace.pdf"), 5, 4)
+  features = c("Senepy", "Stem_Signature"),
+  ncol = 1,
+  keep_scale = "feature",
+  show_stat = F,theme_use = SCP::theme_blank
+) 
+p3a
+save_plot(p3a, file.path(figure_dir, "Figure3A_senescence_stemness.pdf"), 5, 8)
 ```
 
-```{r figure-3-gdf15-de-overlap}
+## Figure 3B: distance from the luminal surface
+
+This panel uses the final, post-`# Confident from Here====` pipeline in `Scripts/Adenoma_radius_analysis.R`.
+
+```{r figure-3b-surface-distance}
+stem_distance <- read_csv(
+  here("results", "tables", "surface_distance_stemness.csv"),
+  show_col_types = FALSE
+)
+senescence_distance <- read_csv(
+  here("results", "tables", "surface_distance_senescence.csv"),
+  show_col_types = FALSE
+)
+distance_colors <- c(
+  Normal = unname(region_colors[["Normal"]]),
+  Adenoma = unname(region_colors[["Low-grade"]])
+)
+
+surface_score_plot <- function(data, y_label) {
+  ggplot(data, aes(distance_bin_um, mean_score, color = Adenoma)) +
+    geom_point(aes(size = n_spots), alpha = 0.8) +
+    geom_smooth(
+      method = "gam",
+      formula = y ~ s(x, bs = "cs"),
+      se = TRUE,
+      linewidth = 1
+    ) +
+    scale_color_manual(values = distance_colors) +
+    coord_cartesian(xlim = c(0, 825)) +
+    ggpubr::theme_pubr() +
+    labs(
+      x = "Distance from tract surface (micrometers)",
+      y = y_label,
+      size = "N spots",
+      color = "Region"
+    )
+}
+
+p3b_senescence <- surface_score_plot(
+  senescence_distance,
+  "Mean senescence score per 100-micrometer bin"
+)
+p3b_stemness <- surface_score_plot(
+  stem_distance,
+  "Mean stemness score per 100-micrometer bin"
+)
+p3b <- p3b_senescence / p3b_stemness
+p3b
+save_plot(p3b, file.path(figure_dir, "Figure3B_surface_distance.pdf"), 5, 8)
+```
+
+## Figure 3C: representative spatial senescence–stemness maps
+
+```{r figure-3c-spatial-senescence-stemness}
+p3c_pathology <- SpatialDimPlot(
+  combined_final,
+  group.by = "Adenoma",
+  images = main_spatial_example,
+  cols = region_colors
+)
+p3c_he <- SpatialDimPlot(
+  combined_final,
+  group.by = "Adenoma",
+  images = main_spatial_example,
+  cols = region_colors,
+  alpha = 0
+) + NoLegend()
+p3c_scores <- SpatialFeaturePlot(
+  combined_final,
+  features = c("Senepy", "Stem_Signature"),
+  images = main_spatial_example,
+  ncol = 1,
+  keep.scale = "feature"
+)
+p3c_moran <- SpatialDimPlot(
+  combined_final,
+  group.by = "Cluster_Moran_Senepy_Stem_Signature",
+  images = main_spatial_example,
+  cols = moran_colors
+)
+p3c_clusters <- SpatialDimPlot(
+  combined_final,
+  group.by = "combined_cluster",
+  images = main_spatial_example,
+  cols = cluster_colors
+)
+p3c <- wrap_plots(
+  p3c_pathology, p3c_scores[[1]], p3c_moran,
+  p3c_he, p3c_scores[[2]], p3c_clusters,
+  ncol = 3
+)
+p3c
+save_plot(p3c, file.path(figure_dir, "Figure3C_spatial_senescence_stemness.pdf"), 11, 7)
+```
+
+## Figure 3D: senescence–stemness Moran classes
+
+```{r figure-3d-senescence-stemness-moran, fig.width=12,fig.height=5}
+moran_composition_tests = read_rds(here("results","tables","local_moran_composition_tests.rds"))
+p3d_size <- plot_moran_composition(
+  filter(combined_final@meta.data, Adenoma == "Low-grade"),
+  class_col = "Cluster_Moran_Senepy_Stem_Signature",
+  condition_col = "LargeSmall",
+  condition_keep = c("Small", "Large"),
+  posthoc = moran_composition_tests$largesmall[[
+    "Cluster_Moran_Senepy_Stem_Signature"
+  ]]$posthoc
+)
+p3d_region <- plot_moran_composition(
+  combined_final@meta.data,
+  class_col = "Cluster_Moran_Senepy_Stem_Signature",
+  condition_col = "Adenoma",
+  condition_keep = c("Normal", "Low-grade"),
+  posthoc = moran_composition_tests$adenoma[[
+    "Cluster_Moran_Senepy_Stem_Signature"
+  ]]$posthoc
+)
+p3d_diffusion <- DimPlot(
+  epithelial,
+  reduction = "diffmap",
+  group.by = "Cluster_Moran_Senepy_Stem_Signature",
+  cols = moran_colors
+) + theme_void()
+p3d <- p3d_size | p3d_region | p3d_diffusion
+p3d
+save_plot(p3d, file.path(figure_dir, "Figure3D_senescence_stemness_moran.pdf"), 11, 4)
+```
+
+## Figure 3E: three-way Cell2location abundance
+
+```{r figure-3e-three-way-cell2location, fig.width=8,fig.height=5}
+cell2location_features <- c("Dysplastic_Epi", "CD8_T_cells", "Normal_Epi")
+p3e_umap <- three_way_reduction_plot(
+  combined_final,
+  features = cell2location_features,
+  reduction = "wnn.umap"
+)
+p3e_spatial <- three_way_spatial_plot(
+  combined_final,
+  features = cell2location_features,
+  images = main_spatial_example
+)
+p3e <- p3e_umap | p3e_spatial
+p3e
+save_plot(p3e, file.path(figure_dir, "Figure3E_three_way_cell2location.pdf"), 10, 5)
+```
+
+## Figure 3F: dysplastic epithelial subtypes in diffusion space
+
+```{r figure-3f-dysplastic-subtypes-diffusion}
+dysplastic_features <- c(
+  "Dysplastic_Senescent_like",
+  "Dysplastic_Stem_like",
+  "Dysplastic_Tuft_like",
+  "Dysplastic_Proliferating"
+)
+dysplastic_feature_labels <- c(
+  "LGALS3+ Dysplastic cell",
+  "LGR5+ Dysplastic cell",
+  "AVIL+ Dysplastic cell",
+  "MKI67+ Dysplastic cell"
+)
+p3f_plots <- SCP::FeatureDimPlot(
+  epithelial,
+  reduction = "diffmap",
+  features = dysplastic_features,
+  combine = FALSE,
+  keep_scale = "feature",show_stat = F,theme_use = SCP::theme_blank
+) |>
+  map2(dysplastic_feature_labels, function(plot, label) {
+    plot + theme_void() + ggtitle(label)
+  })
+p3f <- wrap_plots(p3f_plots, ncol = 2)
+p3f
+save_plot(p3f, file.path(figure_dir, "Figure3F_dysplastic_subtypes_diffusion.pdf"), 8, 7)
+```
+
+## Figure 3G: spatial dysplastic epithelial subtypes
+
+```{r figure-3g-dysplastic-subtypes-spatial}
+p3g_plots <- SpatialFeaturePlot(
+  combined_final,
+  features = dysplastic_features,
+  images = main_spatial_example,
+  combine = FALSE,
+  keep.scale = "feature"
+) |>
+  map2(dysplastic_feature_labels, function(plot, label) {
+    plot + ggtitle(label)
+  })
+p3g <- wrap_plots(p3g_plots, ncol = 2)
+p3g
+save_plot(p3g, file.path(figure_dir, "Figure3G_dysplastic_subtypes_spatial.pdf"), 8, 7)
+```
+
+## Figure 3H: ADT-CD8A
+
+```{r figure-3h-adt-cd8a}
+DefaultAssay(combined_final) <- "Spatial"
+p3h_umap <- SCP::FeatureDimPlot(
+  combined_final,
+  reduction = "wnn.umap",
+  features = "ADT-CD8A",
+  show_stat = F,theme_use = SCP::theme_blank
+) 
+p3h_spatial <- SpatialFeaturePlot(
+  combined_final,
+  features = "ADT-CD8A",
+  images = main_spatial_example,
+  min.cutoff = 0
+)
+p3h <- p3h_umap / p3h_spatial
+p3h
+save_plot(p3h, file.path(figure_dir, "Figure3H_ADT_CD8A.pdf"), 5, 8)
+DefaultAssay(combined_final) <- "Spatial"
+```
+
+# Figure 4: GDF15, spatial association, and CD8 exclusion
+
+## Figure 4A: GDF15 candidate intersection
+
+```{r figure-4a-gdf15-overlap}
 venn_data <- readRDS(here("results", "tables", "de_gdf15_venn.rds"))
-p3e <- ggvenn::ggvenn(
-  data = venn_data,
+p4a <- ggvenn::ggvenn(
+  venn_data,
   show_stats = "c",
   set_name_size = 4,
-  fill_color = unname(cluster_colors[c("0", "6", "8")])
+  fill_color = c("#74C7D4", "#EE8C9B", "#F2C14E")
 )
-save_plot(p3e, file.path(figure_dir, "Figure3_GDF15_DE_overlap.pdf"), 4.5, 4.5)
+p4a
+save_plot(p4a, file.path(figure_dir, "Figure4A_GDF15_overlap.pdf"), 5, 5)
 ```
 
-# Figure 4: spatial associations and CD8 neighborhoods
+## Figure 4B: GDF15 across clusters
 
-```{r figure-4-partial-correlation}
+```{r figure-4b-gdf15-clusters}
+DefaultAssay(combined_final) <- "Spatial4"
+p4b <- SCP::FeatureStatPlot(
+  combined_final,
+  stat.by = "GDF15",
+  group.by = "combined_cluster",
+  palcolor = cluster_colors, add_box = T
+) +
+  coord_flip() +
+  theme_classic() +
+  NoLegend()+
+  labs(x = "Cluster", y = "Expression level")
+p4b
+save_plot(p4b, file.path(figure_dir, "Figure4B_GDF15_clusters.pdf"), 5, 5)
+```
+
+## Figure 4C: spatial GDF15
+
+```{r figure-4c-spatial-gdf15}
+p4c <- SpatialFeaturePlot(
+  combined_final,
+  features = "GDF15",
+  images = advanced_examples,
+  ncol = 1,
+  keep.scale = "all"
+)
+p4c
+save_plot(p4c, file.path(figure_dir, "Figure4C_spatial_GDF15.pdf"), 5, 8)
+```
+
+## Figure 4D: GDF15–senescence and GDF15–stemness compositions
+
+```{r figure-4d-gdf15-signature-moran-composition}
+gdf15_signature_columns <- c(
+  `GDF15-Senescence` = "Cluster_Moran_GDF15_Senepy",
+  `GDF15-Stemness` = "Cluster_Moran_GDF15_Stem_Signature"
+)
+p4d <- imap(gdf15_signature_columns, function(class_col, label) {
+  size_plot <- plot_moran_composition(
+    filter(combined_final@meta.data, Adenoma == "Low-grade"),
+    class_col,
+    "LargeSmall",
+    c("Small", "Large"),
+    posthoc = moran_composition_tests$largesmall[[class_col]]$posthoc
+  ) + ggtitle(label)
+  region_plot <- plot_moran_composition(
+    combined_final@meta.data,
+    class_col,
+    "Adenoma",
+    c("Normal", "Low-grade"),
+    posthoc = moran_composition_tests$adenoma[[class_col]]$posthoc
+  ) + ggtitle(label)
+  size_plot | region_plot
+}) |>
+  wrap_plots(ncol = 1)
+p4d
+save_plot(p4d, file.path(figure_dir, "Figure4D_GDF15_signature_moran.pdf"), 8, 8)
+```
+
+## Figure 4E: representative GDF15-signature Moran maps
+
+```{r figure-4e-gdf15-signature-moran-spatial}
+combined_final_non_stroma = subset(combined_final,subset = Adenoma != "Stroma")
+p4e_senescence <- SpatialDimPlot(
+  combined_final_non_stroma,
+  group.by = "Cluster_Moran_GDF15_Senepy",
+  images = advanced_examples,
+  cols = moran_colors,
+  ncol = 1
+) & NoLegend()
+p4e_stemness <- SpatialDimPlot(
+  combined_final_non_stroma,
+  group.by = "Cluster_Moran_GDF15_Stem_Signature",
+  images = advanced_examples,
+  cols = moran_colors,
+  ncol = 1
+) & NoLegend()
+p4e_pathology <- SpatialDimPlot(
+  combined_final_non_stroma,
+  group.by = "Adenoma",
+  images = advanced_examples,
+  cols = region_colors,
+  ncol = 1
+) & NoLegend()
+p4e_clusters <- SpatialDimPlot(
+  combined_final_non_stroma,
+  group.by = "combined_cluster",
+  images = advanced_examples,
+  cols = cluster_colors,
+  ncol = 1
+) & NoLegend()
+p4e <- p4e_senescence | p4e_stemness | p4e_pathology | p4e_clusters
+p4e
+save_plot(p4e, file.path(figure_dir, "Figure4E_GDF15_signature_moran_spatial.pdf"), 13, 7)
+```
+
+## Figure 4F: lag association before and after GDF15 adjustment
+
+The inferential comparison is performed on Fisher-transformed correlations, so this panel plots `z_before` and `z_after` rather than raw rho.
+
+```{r figure-4f-partial-spatial-correlation}
 partial_spatial <- read_csv(
   here("results", "tables", "partial_spatial_correlation.csv"),
   show_col_types = FALSE
 )
+partial_spatial_test <- readRDS(
+  here("results", "tables", "partial_spatial_correlation_test.rds")
+)
 partial_long <- partial_spatial |>
-  select(Sample_ID, group, rho_before, rho_after) |>
-  pivot_longer(c(rho_before, rho_after), names_to = "Adjustment", values_to = "rho") |>
+  dplyr::select(Sample_ID, group, z_before, z_after) |>
+  pivot_longer(c(z_before, z_after), names_to = "Adjustment", values_to = "z") |>
   mutate(
-    Adjustment = recode(Adjustment, rho_before = "Before", rho_after = "After"),
-    Adjustment = factor(Adjustment, levels = c("Before", "After"))
+    Adjustment = recode(Adjustment, z_before = "Before", z_after = "After"),
+    Adjustment = factor(Adjustment, levels = c("Before", "After")),
+    group = recode(group, Small = "Non-Adv", Large = "Advanced"),
+    group = factor(group, levels = c("Non-Adv", "Advanced"))
   )
-p4a <- sample_level_boxplot(partial_long, "Adjustment", "rho") +
-  facet_wrap(~group) + ylab("Spatial lag Spearman rho")
-save_plot(p4a, file.path(figure_dir, "Figure4A_partial_spatial_correlation.pdf"), 6, 4)
+format_panel_p <- function(p) {
+  if (is.na(p)) return("p = NA")
+  if (p < 0.001) return("p < 0.001")
+  paste0("p = ", formatC(p, format = "f", digits = 3))
+}
+partial_annotations <- partial_spatial_test$stratified |>
+  transmute(
+    group = recode(group, Small = "Non-Adv", Large = "Advanced"),
+    group = factor(group, levels = c("Non-Adv", "Advanced")),
+    label = map_chr(wilcox_p, format_panel_p)
+  )
+p4f <- sample_level_boxplot(partial_long, "Adjustment", "z") +
+  facet_wrap(~group) +
+  geom_text(
+    data = partial_annotations,
+    aes(x = 1.5, y = Inf, label = label),
+    inherit.aes = FALSE,
+    vjust = 1.5
+  ) +
+  labs(
+    title = "Lag Senescence-Stemness correlation before/after GDF15 adjustment",
+    subtitle = paste0(
+      "Paired Wilcoxon ", format_panel_p(partial_spatial_test$paired_wilcox$p.value),
+      " | Sign-flip permutation ", format_panel_p(partial_spatial_test$paired_perm_p)
+    ),
+    y = "Fisher z(rho)"
+  ) + ggsci::scale_fill_aaas() + NoLegend()
+p4f
+save_plot(p4f, file.path(figure_dir, "Figure4F_partial_spatial_correlation.pdf"), 7, 4)
 ```
 
-```{r figure-4-local-moran}
-moran <- read_csv(
-  here("results", "tables", "local_moran_senescence_stemness.csv"),
+## Figure 4G: GDF15–CD8 Moran compositions
+
+```{r figure-4g-gdf15-cd8-moran-composition}
+gdf15_cd8_columns <- c(
+  `GDF15-CD8A antibody` = "Cluster_Moran_GDF15_ADT_CD8A",
+  `GDF15-CD8 T cell` = "Cluster_Moran_GDF15_CD8_T"
+)
+p4g <- imap(gdf15_cd8_columns, function(class_col, label) {
+  size_plot <- plot_moran_composition(
+    filter(combined_final@meta.data, Adenoma == "Low-grade"),
+    class_col,
+    "LargeSmall",
+    c("Small", "Large"),
+    posthoc = moran_composition_tests$largesmall[[class_col]]$posthoc
+  ) + ggtitle(label)
+  region_plot <- plot_moran_composition(
+    combined_final@meta.data,
+    class_col,
+    "Adenoma",
+    c("Normal", "Low-grade"),
+    posthoc = moran_composition_tests$adenoma[[class_col]]$posthoc
+  ) + ggtitle(label)
+  size_plot | region_plot
+}) |>
+  wrap_plots(ncol = 1)
+p4g
+save_plot(p4g, file.path(figure_dir, "Figure4G_GDF15_CD8_moran.pdf"), 8, 8)
+```
+
+## Figure 4H: representative GDF15–CD8 Moran maps
+
+```{r figure-4h-gdf15-cd8-moran-spatial}
+p4h_adt <- SpatialDimPlot(
+  combined_final,
+  group.by = "Cluster_Moran_GDF15_ADT_CD8A",
+  images = advanced_examples,
+  cols = moran_colors,
+  ncol = 1
+) & NoLegend()
+p4h_cell <- SpatialDimPlot(
+  combined_final,
+  group.by = "Cluster_Moran_GDF15_CD8_T",
+  images = advanced_examples,
+  cols = moran_colors,
+  ncol = 1
+) & NoLegend()
+p4h <- p4h_adt | p4h_cell
+p4h
+save_plot(p4h, file.path(figure_dir, "Figure4H_GDF15_CD8_moran_spatial.pdf"), 8, 7)
+```
+
+## Figure 4I: CD8 density around GDF15-low and GDF15-high spots
+
+```{r figure-4i-cd8-gdf15-high-low}
+cd8_gdf15 <- read_csv(
+  here("results", "tables", "cd8_density_gdf15_high_low.csv"),
   show_col_types = FALSE
 )
-p4b <- ggplot(
-  filter(moran, Cluster_Moran_Senepy_Stem_Signature != "Not sig"),
-  aes(Cluster_Moran_Senepy_Stem_Signature, fill = Cluster_Moran_Senepy_Stem_Signature)
-) +
-  geom_bar() +
-  scale_fill_manual(values = moran_colors) +
-  theme_classic() +
-  theme(axis.text.x = element_text(angle = 30, hjust = 1), legend.position = "none") +
-  labs(x = NULL, y = "Significant spots")
-save_plot(p4b, file.path(figure_dir, "Figure4B_local_moran_classes.pdf"), 5, 4)
-```
-
-```{r figure-4-cd8}
-cd8_region <- read_csv(here("results", "tables", "cd8_density_region.csv"), show_col_types = FALSE)
-cd8_gdf15 <- read_csv(here("results", "tables", "cd8_density_gdf15_high_low.csv"), show_col_types = FALSE)
-
-cd8_region_long <- cd8_region |>
-  dplyr::select(Sample_ID, LargeSmall, dens_LGD, dens_Normal) |>
-  tidyr::pivot_longer(
-    cols = c(dens_LGD, dens_Normal),
-    names_to = "Region",
-    values_to = "Density"
-  ) |>
-  dplyr::mutate(
-    Region = dplyr::recode(.data$Region, dens_LGD = "LGD", dens_Normal = "Normal"),
-    Region = factor(.data$Region, levels = c("Normal", "LGD")),
-    LargeSmall = factor(.data$LargeSmall, levels = c("Small", "Large"))
-  )
-
-p4c <- ggpubr::ggboxplot(
-  cd8_region_long,
-  x = "Region",
-  y = "Density",
-  facet.by = "LargeSmall",
-  add = "jitter",
-  width = 0.6,
-  fill = "Region"
-) +
-  scale_fill_manual(
-    values = c(Normal = region_colors[["Normal"]], LGD = region_colors[["Low-grade"]])
-  ) +
-  geom_line(aes(group = Sample_ID), alpha = 0.25) +
-  ylab("CD8 T cell density around GDF15-high spots") +
-  xlab(NULL) +
-  ggpubr::stat_compare_means(method = "wilcox.test", paired = TRUE, label = "p.format")
-
 cd8_gdf15_long <- cd8_gdf15 |>
-  dplyr::filter(!is.na(.data$dens_High), !is.na(.data$dens_Low)) |>
-  dplyr::select(
-    Sample_ID,
-    LargeSmall,
-    Adenoma,
-    dens_Low,
-    dens_High
-  ) |>
-  tidyr::pivot_longer(
-    cols = c(dens_Low, dens_High),
-    names_to = "GDF15",
-    values_to = "Density"
-  ) |>
-  dplyr::mutate(
-    GDF15 = dplyr::recode(.data$GDF15, dens_Low = "GDF15-Low", dens_High = "GDF15-High"),
-    GDF15 = factor(.data$GDF15, levels = c("GDF15-Low", "GDF15-High"))
+  filter(!is.na(dens_High), !is.na(dens_Low)) |>
+  dplyr::select(Sample_ID, LargeSmall, Adenoma, dens_Low, dens_High) |>
+  pivot_longer(c(dens_Low, dens_High), names_to = "GDF15", values_to = "Density") |>
+  mutate(
+    GDF15 = recode(GDF15, dens_Low = "GDF15-Low", dens_High = "GDF15-High"),
+    GDF15 = factor(GDF15, levels = c("GDF15-Low", "GDF15-High")),
+    Adenoma = recode(Adenoma, `Low-grade` = "Adenoma"),
+    Adenoma = factor(Adenoma, levels = c("Normal", "Adenoma"))
   )
-
-p4d <- ggpubr::ggboxplot(
+p4i <- ggpubr::ggboxplot(
   cd8_gdf15_long,
   x = "GDF15",
   y = "Density",
   facet.by = "Adenoma",
-  add = "jitter",
+  add = "point",
   width = 0.6,
   fill = "GDF15"
 ) +
-  scale_fill_manual(values = c("GDF15-Low" = "#0652DD", "GDF15-High" = "#ff5252")) +
   geom_line(aes(group = Sample_ID), alpha = 0.25) +
-  xlab(NULL) +
-  ylab("CD8 neighborhood density") +
-  ggpubr::stat_compare_means(method = "wilcox.test", paired = TRUE, label = "p.format")
+  ggpubr::stat_compare_means(
+    method = "wilcox.test",
+    paired = TRUE,
+    method.args = list(exact = TRUE),
+    label = "p.format"
+  ) +
+  labs(x = NULL, y = "CD8 T cell density by antibody")+scale_fill_aaas() + NoLegend()
+p4i
+save_plot(p4i, file.path(figure_dir, "Figure4I_CD8_GDF15_high_low.pdf"), 6, 4)
+```
 
-save_plot(p4c, file.path(figure_dir, "Figure4C_CD8_region.pdf"), 4, 4)
-save_plot(p4d, file.path(figure_dir, "Figure4D_CD8_GDF15.pdf"), 4, 4)
+## Figure 4J: CD8 density around GDF15-high spots by pathology
+
+```{r figure-4j-cd8-region}
+cd8_region <- read_csv(
+  here("results", "tables", "cd8_density_region.csv"),
+  show_col_types = FALSE
+)
+cd8_region_long <- cd8_region |>
+  dplyr::select(Sample_ID, LargeSmall, dens_LGD, dens_Normal) |>
+  pivot_longer(c(dens_LGD, dens_Normal), names_to = "Region", values_to = "Density") |>
+  mutate(
+    Region = recode(Region, dens_LGD = "Adenoma", dens_Normal = "Normal"),
+    Region = factor(Region, levels = c("Normal", "Adenoma")),
+    Advancement = recode(LargeSmall, Small = "Non-Adv", Large = "Advanced"),
+    Advancement = factor(Advancement, levels = c("Non-Adv", "Advanced"))
+  )
+p4j <- ggpubr::ggboxplot(
+  cd8_region_long,
+  x = "Region",
+  y = "Density",
+  facet.by = "Advancement",
+  add = "point",
+  width = 0.6,
+  fill = "Region"
+) +
+  geom_line(aes(group = Sample_ID), alpha = 0.25) +
+  ggpubr::stat_compare_means(
+    method = "wilcox.test",
+    paired = TRUE,
+    method.args = list(exact = TRUE),
+    label = "p.format"
+  ) +
+  labs(x = NULL, y = "CD8 T cell density by antibody around GDF15-high spots") +scale_fill_aaas() + NoLegend()
+p4j
+save_plot(p4j, file.path(figure_dir, "Figure4J_CD8_region.pdf"), 6, 4)
 ```

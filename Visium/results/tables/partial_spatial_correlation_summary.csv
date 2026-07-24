@@ -1,0 +1,2 @@
+label,n_pairs,wilcox_statistic,wilcox_p,paired_perm_p,median_delta_z,median_rho_before,median_rho_after
+x_vs_Wy (smoothed),21,37,0.004878997802734374,0.007007007007007007,-0.016361962289779985,0.2656067158941185,0.2531268264172999

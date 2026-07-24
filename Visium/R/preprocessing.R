@@ -6,6 +6,50 @@ assert_columns <- function(x, columns, object_name = deparse(substitute(x))) {
   invisible(x)
 }
 
+read_analysis_archive <- function(path) {
+  if (!file.exists(path)) stop("Analysis archive does not exist: ", path)
+  resolved_path <- normalizePath(path, mustWork = TRUE)
+  extension <- tolower(tools::file_ext(resolved_path))
+
+  switch(
+    extension,
+    qs = qs::qread(resolved_path),
+    qs2 = {
+      if (!requireNamespace("qs2", quietly = TRUE)) {
+        stop("Reading this archived .qs2 object requires the qs2 package: ", resolved_path)
+      }
+      qs2::qs_read(resolved_path)
+    },
+    rds = readRDS(resolved_path),
+    stop("Unsupported analysis archive extension: ", extension)
+  )
+}
+
+prepare_integrated_checkpoint <- function(object) {
+  if (!("Spatial" %in% SeuratObject::Assays(object))) {
+    stop("The integrated checkpoint does not contain a Spatial assay")
+  }
+  Seurat::DefaultAssay(object) <- "Spatial"
+
+  if (
+    !("ADT_dsb" %in% SeuratObject::Assays(object)) &&
+      "ADT_dsb_by_slide" %in% SeuratObject::Assays(object)
+  ) {
+    object[["ADT_dsb"]] <- object[["ADT_dsb_by_slide"]]
+    object[["ADT_dsb_by_slide"]] <- NULL
+  }
+
+  # Some internal archives were saved after scoring. Remove those assays so
+  # that the public workflow recomputes them from Spatial expression.
+  score_assays <- intersect(
+    c("AUCell", "UCell", "JASMINE", "singscore"),
+    SeuratObject::Assays(object)
+  )
+  for (assay in score_assays) object[[assay]] <- NULL
+  object@misc$irGSEA_RRA <- NULL
+  object
+}
+
 read_sample_manifest <- function(path) {
   manifest <- readr::read_csv(path, show_col_types = FALSE)
   assert_columns(manifest, c("sample_id", "space_ranger_outs", "has_adt", "include"))

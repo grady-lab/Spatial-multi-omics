@@ -1,0 +1,6 @@
+comparison,score,condition,level_a,level_b,mode,n_a,n_b,median_a,median_b,median_difference_a_minus_b,statistic,p_value,p_adjusted_bonferroni
+senepy_c2_vs_c3,Senepy,combined_cluster,2,3,paired_within_sample,20,20,0.07875644654068982,0.0779681525776111,-4.962162859773744e-4,120,0.5882844808893127,0.004593298138433712
+senepy_c4_vs_c3,Senepy,combined_cluster,4,3,paired_within_sample,18,18,0.0886371378087127,0.07435467311476973,0.009570278339733236,158,0.0017148797525814014,0.004593298138433712
+senepy_c4_vs_c2,Senepy,combined_cluster,4,2,paired_within_sample,18,18,0.0886371378087127,0.08026355793697505,0.008935157304458596,154,0.0030621987589558083,0.5882844808893127
+pseudotime_lowgrade_vs_normal,dpt_pseudotime,Adenoma,Low-grade,Normal,paired_within_sample,20,20,0.38130350749999997,0.10418007600000001,0.26395945,205,2.0352486806761083e-4,NA
+pseudotime_large_vs_small_lowgrade,dpt_pseudotime,LargeSmall,Large,Small,unpaired_between_samples,14,6,0.41376472499999994,0.3066259175,0.10713880749999993,63,0.09087280958776588,NA

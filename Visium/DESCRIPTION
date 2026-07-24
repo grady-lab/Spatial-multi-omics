@@ -25,6 +25,7 @@ Imports:
     destiny (== 3.20.0),
     irGSEA (== 3.3.3),
     UCell,
+    BiocParallel,
     ccAFv2 (== 0.0.0.9),
     CytoTRACE2 (== 1.1.0),
     rgeoda (== 0.1.0),
@@ -41,8 +42,12 @@ Imports:
     cowplot,
     ggpubr,
     ggvenn,
+    ggsci (== 4.0.0),
     mgcv,
     dittoSeq,
+    SCP (== 0.5.6),
     here,
     rmarkdown,
     knitr
+Suggests:
+    qs2

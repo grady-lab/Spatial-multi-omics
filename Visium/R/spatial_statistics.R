@@ -194,7 +194,10 @@ bivar_local_moran_seurat <- function(
   if (!is.null(na_category_label)) {
     local_cluster[is.na(local_cluster)] <- na_category_label
   }
-  safe_name <- function(value) gsub("\\s+", "_", gsub("-", "_", value))
+  safe_name <- function(value) {
+    value <- gsub("[^[:alnum:]_]+", "_", value)
+    gsub("^_+|_+$", "", value)
+  }
   suffix <- paste(safe_name(target1), safe_name(target2), sep = "_")
   metadata <- data.frame(
     Biv_Moran_I = local_i,
@@ -390,53 +393,90 @@ compare_before_after <- function(
     after,
     sample_col = "Sample_ID",
     group_col = "group",
+    rho_col = "rho",
     permutations = 999,
-    seed = 1
+    seed = 1,
+    label = "rho"
 ) {
-  joined <- before |>
-    dplyr::select(
-      dplyr::all_of(c(sample_col, group_col)),
-      z_before = z,
-      rho_before = rho
-    ) |>
+  clip_rho <- function(rho) pmin(pmax(rho, -0.999999), 0.999999)
+
+  before_data <- before |>
+    dplyr::transmute(
+      !!sample_col := .data[[sample_col]],
+      !!group_col := .data[[group_col]],
+      rho_before = .data[[rho_col]],
+      z_before = atanh(clip_rho(.data[[rho_col]]))
+    )
+  after_data <- after |>
+    dplyr::transmute(
+      !!sample_col := .data[[sample_col]],
+      rho_after = .data[[rho_col]],
+      z_after = atanh(clip_rho(.data[[rho_col]]))
+    )
+
+  joined <- before_data |>
     dplyr::inner_join(
-      after |>
-        dplyr::select(dplyr::all_of(sample_col), z_after = z, rho_after = rho),
+      after_data,
       by = sample_col
     ) |>
     dplyr::filter(is.finite(.data$z_before), is.finite(.data$z_after)) |>
-    dplyr::mutate(delta_z = .data$z_after - .data$z_before)
+    dplyr::mutate(
+      delta_z = .data$z_after - .data$z_before,
+      delta_rho_approx = tanh(.data$z_after) - tanh(.data$z_before)
+    )
 
-  paired <- stats::wilcox.test(joined$z_after, joined$z_before, paired = TRUE, exact = FALSE)
+  paired <- stats::wilcox.test(joined$z_after, joined$z_before, paired = TRUE, exact = TRUE)
   set.seed(seed)
   observed <- stats::median(joined$delta_z)
   null <- replicate(permutations, {
     signs <- sample(c(-1, 1), nrow(joined), replace = TRUE)
     stats::median(joined$delta_z * signs)
   })
-  permutation_p <- (1 + sum(abs(null) >= abs(observed))) / (permutations + 1)
+  permutation_p <- mean(abs(null) >= abs(observed))
 
   stratified <- joined |>
+    dplyr::mutate(!!group_col := as.character(.data[[group_col]])) |>
     dplyr::group_by(.data[[group_col]]) |>
     dplyr::group_modify(function(df, key) {
       if (nrow(df) < 3) {
-        return(tibble::tibble(n = nrow(df), median_delta_z = NA_real_, wilcox_p = NA_real_, sign_flip_p = NA_real_))
+        return(tibble::tibble(
+          n = nrow(df),
+          med_delta_z = NA_real_,
+          wilcox_p = NA_real_,
+          perm_p = NA_real_
+        ))
       }
+      group_wilcox <- stats::wilcox.test(
+        df$z_after,
+        df$z_before,
+        paired = TRUE,
+        exact = TRUE
+      )
       group_observed <- stats::median(df$delta_z)
+      set.seed(seed)
       group_null <- replicate(permutations, {
         signs <- sample(c(-1, 1), nrow(df), replace = TRUE)
         stats::median(df$delta_z * signs)
       })
       tibble::tibble(
         n = nrow(df),
-        median_delta_z = group_observed,
-        wilcox_p = stats::wilcox.test(df$z_after, df$z_before, paired = TRUE, exact = FALSE)$p.value,
-        sign_flip_p = (1 + sum(abs(group_null) >= abs(group_observed))) / (permutations + 1)
+        med_delta_z = group_observed,
+        wilcox_p = group_wilcox$p.value,
+        perm_p = mean(abs(group_null) >= abs(group_observed))
       )
     }) |>
     dplyr::ungroup()
 
-  list(table = joined, paired_wilcox = paired, sign_flip_p = permutation_p, stratified = stratified)
+  list(
+    label = label,
+    table = joined,
+    paired_wilcox = paired,
+    paired_perm_p = permutation_p,
+    median_delta_z = observed,
+    median_rho_before = tanh(stats::median(joined$z_before)),
+    median_rho_after = tanh(stats::median(joined$z_after)),
+    stratified = stratified
+  )
 }
 
 .zscore <- function(x) {

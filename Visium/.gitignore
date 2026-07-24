@@ -17,12 +17,12 @@ data/raw/**
 !data/raw/README.md
 data/derived/**
 !data/derived/README.md
+data/reference/**
+!data/reference/README.md
 
-# Generated results
+# Generated tables are versioned; figure PDFs remain local
 results/figures/**
 !results/figures/.gitkeep
-results/tables/**
-!results/tables/.gitkeep
 
 # Large scientific file types and crash dumps
 *.rds
@@ -38,6 +38,17 @@ results/tables/**
 *.tar.gz
 core
 core.*
+
+# Lightweight reproducibility inputs and generated R result objects
+!data/derived/
+!data/derived/README.md
+!data/derived/result.dge.rds
+!data/derived/pseudotime/
+!data/derived/pseudotime/*.csv
+!data/reference/
+!data/reference/gene_sets.rds
+!data/reference/luminal_surface_annotations.csv
+!results/tables/*.rds
 
 # Rendered notebook output
 Rmd/*_files/

@@ -35,12 +35,14 @@ VALIDATION_NOTES.md          Items that require author confirmation before archi
 2. Create the isolated Python environments with `conda env create -f environment-senepy.yml`.
 3. Put Space Ranger outputs and the externally distributed processed objects in the locations described in `data/README.md`.
 4. Edit `config/sample_manifest.csv` only if the local data paths differ.
-5. If rebuilding the public single-cell reference, render `Rmd/Visium_analyses.Rmd` with `build_scrna_reference: true`; otherwise provide the archived `data/reference/scrna_reference.h5ad`.
+5. If rebuilding the public single-cell reference, render `Rmd/Visium_analyses.Rmd` with `build_scrna_reference: true`; otherwise provide the archived `data/reference/scrna_reference.h5ad` and `data/derived/marteau_cell2location_reference.qs`.
 6. Run stLearn and Cell2location independently as described in `python/README.md`, or supply their archived output files.
 7. Run `Rmd/Visium_analyses.Rmd` from the repository root. SenePy is selected through reticulate from the `adenoma-senepy` environment; stLearn and Cell2location results are imported from `data/derived/`. To reconstruct `visium_semla.qs` from `combined_final` and the Space Ranger files, render with the parameter `rebuild_staffli: true`.
 8. Render `Rmd/Clean_plotting.Rmd` and `Rmd/Supple_plotting.Rmd` after the derived objects have been generated.
 
 The notebooks use project-relative paths and never require the original analyst's home directory.
+
+See `REPRODUCIBILITY_TESTING.md` for a step-by-step test run and comparisons against archived results.
 
 ## Data availability
 
