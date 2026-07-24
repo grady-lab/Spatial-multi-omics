@@ -30,7 +30,9 @@ METHODS_CODE_MAP.md          Mapping from the Methods section to executable code
 
 ## Please find all the figures in the Visium analyses at
 Rmd/
+
   Clean_plotting.html        https://htmlpreview.github.io/?https://github.com/grady-lab/Spatial-multi-omics/blob/main/Visium/Rmd/Clean_plotting.html
+  
   Supple_plotting.html       https://htmlpreview.github.io/?https://github.com/grady-lab/Spatial-multi-omics/blob/main/Visium/Rmd/Supple_plotting.html
 
 
