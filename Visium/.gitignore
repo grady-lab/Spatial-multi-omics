@@ -54,5 +54,7 @@ core.*
 Rmd/*_files/
 Rmd/*_cache/
 Rmd/*.html
+!Rmd/Clean_plotting.html
+!Rmd/Supple_plotting.html
 Rmd/*.pdf
 .DS_Store
