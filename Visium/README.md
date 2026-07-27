@@ -52,8 +52,14 @@ The notebooks use project-relative paths.
 
 Raw sequencing data and large processed objects are distributed separately from this repository. Their required layout and filenames are documented in `data/README.md`; availability information is provided with the associated manuscript.
 
+## Code curation acknowledgment
+
+The code in this repository was curated, reorganized, and documented from the authors’ existing analysis workflows with assistance from OpenAI Codex. 
+The public implementations were compared with the original analysis code and selected archived results to assess consistency.
+The authors reviewed the resulting code and retain responsibility for all scientific decisions, analyses, and conclusions.
+
 ## Citation and license
 
 Please cite the associated manuscript when using this code.
 
-The code is released under the GPLv3 license, as recorded in `DESCRIPTION`.
+The code is released under the GPLv3 license.
