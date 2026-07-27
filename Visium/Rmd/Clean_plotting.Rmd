@@ -223,7 +223,7 @@ save_plot(p2a, file.path(figure_dir, "Figure2A_clusters.pdf"), 9, 6)
 
 ## Figure 2B: curated RNA markers
 
-The marker classes and plotting function reproduce `Scripts/Figure 2B.R`.
+RNA markers are grouped by their annotated cell class.
 
 ```{r figure-2b-markers}
 rna_markers <- c(
@@ -406,7 +406,7 @@ save_plot(p3a, file.path(figure_dir, "Figure3A_senescence_stemness.pdf"), 5, 8)
 
 ## Figure 3B: distance from the luminal surface
 
-This panel uses the final, post-`# Confident from Here====` pipeline in `Scripts/Adenoma_radius_analysis.R`.
+Stemness and senescence scores are summarized across distance from the annotated luminal surface.
 
 ```{r figure-3b-surface-distance}
 stem_distance <- read_csv(

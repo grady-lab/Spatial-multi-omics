@@ -14,7 +14,7 @@ editor_options:
   chunk_output_type: inline
 ---
 
-This notebook contains only analyses reported in the Methods. Exploratory, deprecated, and figure-only code is intentionally omitted. Set `execute: true` when the inputs described in `data/README.md` are available.
+This notebook contains the analyses reported in the Methods. Set `execute: true` when the inputs described in `data/README.md` are available.
 
 ```{r setup, include=FALSE}
 
@@ -125,7 +125,7 @@ Cluster names used throughout the paper were assigned by jointly reviewing these
 
 # Gene-set, senescence, cell-cycle, and developmental-potential scores
 
-CytoTRACE2 is run only on the predominantly epithelial clusters C0, C1, C2, C3, C4, and C6, matching the source analysis. The joined `Spatial` assay is copied to a conventional `RNA` assay, the object is reduced to that assay plus the existing WNN UMAP, and raw counts are supplied to CytoTRACE2. Scores are aligned back to the full object by barcode; excluded clusters remain `NA`.
+CytoTRACE2 is run only on the predominantly epithelial clusters C0, C1, C2, C3, C4, and C6. The joined `Spatial` assay is copied to a conventional `RNA` assay, the object is reduced to that assay plus the existing WNN UMAP, and raw counts are supplied to CytoTRACE2. Scores are aligned back to the full object by barcode; excluded clusters remain `NA`.
 
 ```{r irgsea}
 gene_sets <- readRDS(here("data", "reference", "gene_sets.rds"))
@@ -186,7 +186,7 @@ combined_final$CytoTRACE2_Score <- cytotrace_scores[colnames(combined_final)]
 
 # Spatial pseudotime and diffusion map
 
-stLearn was run independently in Python/JupyterLab, not from R. Per-sample H5AD inputs must contain raw expression, `Adenoma`, `combined_cluster`, array coordinates, image coordinates, and Visium spatial metadata. See `python/README.md` for the standalone workflow. This section imports its results and reproduces `Scripts/DiffusionMap.R`: clusters 0, 1, 2, 3, 4, 6, and 8 are retained without an additional pathology-region filter; RNA layers are split by sample and normalized; a 50-component PCA is followed by FastMNN; and diffusion mapping uses MNN dimensions 1–20 with `sigma = 1`. The displayed `DC1` and `DC2` are diffusion eigenvectors 1 and 3, respectively. The sign of `DC1` is oriented to correlate positively with imported `dpt_pseudotime`.
+stLearn was run independently in Python/JupyterLab, not from R. Per-sample H5AD inputs must contain raw expression, `Adenoma`, `combined_cluster`, array coordinates, image coordinates, and Visium spatial metadata. See `python/README.md` for the standalone workflow. This section imports the pseudotime results. For the epithelial diffusion map, clusters 0, 1, 2, 3, 4, 6, and 8 are retained without an additional pathology-region filter; RNA layers are split by sample and normalized; a 50-component PCA is followed by FastMNN; and diffusion mapping uses MNN dimensions 1–20 with `sigma = 1`. The displayed `DC1` and `DC2` are diffusion eigenvectors 1 and 3, respectively. The sign of `DC1` is oriented to correlate positively with imported `dpt_pseudotime`.
 
 ```{r import-stlearn-output}
 pseudotime_files <- list.files(
@@ -243,7 +243,7 @@ epithelial <- add_diffusion_map(
 
 The Cell2location reference is derived from the integrated public `marteau_Cancer_Cell_2026` object (https://crc.icbi.at/), not from the two Lau adenoma validation cohorts analyzed below. Missing primary annotations are filled from `cell_type_fine`; fibroblast, endothelial, cycling T-cell, cDC, and monocyte labels are consolidated; the 12 explicitly excluded rare or unwanted annotations are removed; and dysplastic labels are replaced by the curated `my_annotationV2` labels. `Dysplastic_Normal` cells are then excluded and `make.names()` is applied to the final labels used by Cell2location.
 
-The realized reference contains 52,871 cells, 24,593 genes, 66 samples, and 28 final annotations. `validate_marteau_reference()` checks all of these values and the per-annotation cell counts against the H5AD used in the analysis. The H5AD export places raw RNA counts in `X` and retains `nCount_RNA`, `nFeature_RNA`, the original barcode index, `sample_id`, `my_annotation`, and `study_id` in `obs`. Because the original export densifies the full count matrix and requires substantial memory, it runs only when `build_scrna_reference: true`.
+The realized reference contains 52,871 cells, 24,593 genes, 66 samples, and 28 final annotations. `validate_marteau_reference()` checks all of these values and the per-annotation cell counts against the H5AD used in the analysis. The H5AD export places raw RNA counts in `X` and retains `nCount_RNA`, `nFeature_RNA`, the original barcode index, `sample_id`, `my_annotation`, and `study_id` in `obs`. Because the export densifies the full count matrix and requires substantial memory, it runs only when `build_scrna_reference: true`.
 
 ```{r build-scrna-reference}
 if (isTRUE(params$build_scrna_reference)) {
@@ -319,7 +319,7 @@ combined_final <- AddMetaData(
 
 # Differential expression and GDF15 candidate prioritization
 
-This section follows the authoritative `DE analysis for GDF15` chunk in the working analysis notebook. All three contrasts retain only positive markers with a minimum detection-fraction difference of 0.10 and a log-fold-change threshold of 0.2. Advancement and stemness are tested within dysplastic clusters C2 and C4. Stemness cutoffs are the cohort-wide lower and upper quartiles across C2/C4. The senescence cutoff is the mean plus two standard deviations among non-stromal spots, followed by the pathologist-defined low-grade-versus-normal comparison. Candidate secreted genes must be positive in all three contrasts and present in the secretome reference.
+All three contrasts retain only positive markers with a minimum detection-fraction difference of 0.10 and a log-fold-change threshold of 0.2. Advancement and stemness are tested within dysplastic clusters C2 and C4. Stemness cutoffs are the cohort-wide lower and upper quartiles across C2/C4. The senescence cutoff is the mean plus two standard deviations among non-stromal spots, followed by the pathologist-defined low-grade-versus-normal comparison. Candidate secreted genes must be positive in all three contrasts and present in the secretome reference.
 
 ```{r differential-expression-gdf15}
 DefaultAssay(combined_final) <- "Spatial"
@@ -500,7 +500,7 @@ purrr::walk2(moran_results, moran_specifications, function(result, specification
 })
 ```
 
-The source composition-testing loop is applied to all five Moran classifications in two ways. For the sample-level size comparison, it retains low-grade spots with a non-missing classification other than `Not sig`, removes samples with 10 or fewer retained spots, and compares Small and Large adenomas as independent groups. For the regional comparison, it retains Normal and Low-grade spots with an informative Moran classification and performs a paired, within-sample comparison of the two pathology regions.
+The composition tests are applied to all five Moran classifications in two ways. For the sample-level size comparison, the analysis retains low-grade spots with a non-missing classification other than `Not sig`, removes samples with 10 or fewer retained spots, and compares Small and Large adenomas as independent groups. For the regional comparison, it retains Normal and Low-grade spots with an informative Moran classification and performs a paired, within-sample comparison of the two pathology regions.
 
 ```{r local-moran-composition-tests}
 moran_class_columns <- paste0("Cluster_Moran_", names(moran_specifications))
@@ -685,7 +685,7 @@ partial_spatial_test$stratified
 
 # CD8 neighborhood analysis
 
-This section reproduces the active analysis under `# CD8 Spatial distance` in the working `My_Visium.Rmd`. The public assay `ADT_dsb_by_slide` is the within-slide DSB-normalized assay named `ADT_dsb_by_slide` in the source notebook. GDF15 and the composite CD8 gate are standardized across all ADT-complete spots within each sample before restricting to normal and low-grade epithelial clusters C0, C1, C2, C3, C4, C6, and C8. CD8-positive spots require z-scored CD3E and CD8A of at least 0.5 and the maximum z-scored CD45RA/CD45RO value of at least zero. Epithelial tissue components use a 1.6-spot-unit connection radius, and CD8 density is measured within a two-spot-unit ring in the same component. The first comparison uses at least five GDF15-high source spots per pathology region; the second uses at least ten GDF15-high or GDF15-low source spots per region and excludes pilot samples. The exploratory nearest-distance calculation is commented out in the source, so the two reported outputs reproduce the active ring-density analyses.
+The `ADT_dsb_by_slide` assay contains within-slide DSB-normalized values. GDF15 and the composite CD8 gate are standardized across all ADT-complete spots within each sample before restricting to normal and low-grade epithelial clusters C0, C1, C2, C3, C4, C6, and C8. CD8-positive spots require z-scored CD3E and CD8A of at least 0.5 and the maximum z-scored CD45RA/CD45RO value of at least zero. Epithelial tissue components use a 1.6-spot-unit connection radius, and CD8 density is measured within a two-spot-unit ring in the same component. The first comparison uses at least five GDF15-high source spots per pathology region; the second uses at least ten GDF15-high or GDF15-low source spots per region and excludes pilot samples.
 
 ```{r cd8-neighborhood}
 cd8_data <- prepare_cd8_neighborhood_data(
@@ -731,7 +731,7 @@ write_csv(cd8_gdf15_test, here("results", "tables", "cd8_density_gdf15_high_low_
 
 # Adenoma radial distance from the tract surface
 
-This section reconstructs `combined_final_semla` from `combined_final` and the Space Ranger coordinates, scale factors, and H&E images when `rebuild_staffli: true`. Only the object-construction steps required by the final analysis are retained; exploratory Staffli subsetting and viewer diagnostics are omitted. Manual annotations exported from the semla viewer use `All` for tract-surface anchors and `Island` for tissue pieces that were excluded. The distance is calculated within each semla-connected tissue component after removing `Island` annotations and singleton components. In the final plotting pipeline, surface anchors and spots within the first 100 micrometers are excluded from the summaries; remaining spots are grouped into 100-micrometer bins, and bins with fewer than five spots are removed.
+This section reconstructs `combined_final_semla` from `combined_final` and the Space Ranger coordinates, scale factors, and H&E images when `rebuild_staffli: true`. Manual annotations exported from the semla viewer use `All` for tract-surface anchors and `Island` for tissue pieces that were excluded. The distance is calculated within each semla-connected tissue component after removing `Island` annotations and singleton components. Surface anchors and spots within the first 100 micrometers are excluded from the summaries; remaining spots are grouped into 100-micrometer bins, and bins with fewer than five spots are removed.
 
 ```{r tract-surface-distance}
 surface_annotations <- read_csv(
