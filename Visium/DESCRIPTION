@@ -4,7 +4,7 @@ Title: Reproducible Code for the Spatial Adenoma Study
 Version: 1.0.0
 Authors@R: person("Manuscript", "Yumo Xie", role = c("aut", "cre"), email = "yxie5@fredhutch.org")
 Description: Analysis and figure-generation code accompanying the spatial adenoma manuscript.
-License: To be selected by the authors before release
+License: GPLv3
 Encoding: UTF-8
 Depends:
     R (== 4.4.0)
