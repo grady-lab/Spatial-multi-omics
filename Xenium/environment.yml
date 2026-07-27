@@ -1,0 +1,60 @@
+# Conda environment for the gdf15-spatial-2026 analysis pipeline.
+#
+# Create with:
+#     conda env create -f environment.yml
+#     conda activate spatial-clean
+#
+# This file is a hand-curated dependency list (not pinned). The exact
+# version-locked environment used to produce the published figures lives on
+# the HPC where the analysis was run; reviewers wanting bit-for-bit
+# reproducibility should obtain that locked environment via the
+# data-availability statement in the paper.
+
+name: spatial-clean
+
+# Channel priority: conda-forge first, then bioconda. Strict priority is
+# strongly recommended; set with:
+#     conda config --set channel_priority strict
+channels:
+  - conda-forge
+  - bioconda
+
+dependencies:
+  # ── Interpreter ────────────────────────────────────────────────────────
+  - python>=3.10,<3.13
+
+  # ── Core scientific stack ──────────────────────────────────────────────
+  - numpy
+  - pandas
+  - scipy
+  - matplotlib
+  - seaborn
+  - scikit-learn
+  - statsmodels
+  - pyyaml
+
+  # ── Geometry / spatial autocorrelation (PySAL) ─────────────────────────
+  # Used by scripts/python/7.0-spatial-morans.py and Figure-4 for Local
+  # Moran's I + epithelial boundary segmentation.
+  - shapely
+  - esda
+  - libpysal
+
+  # ── Single-cell + spatial omics ────────────────────────────────────────
+  - scanpy
+  - anndata
+  - spatialdata
+  - spatialdata-io
+  - squidpy
+  - harmonypy            # required by sc.external.pp.harmony_integrate (cluster_utils.py)
+
+  # ── Jupyter (for scripts/notebooks/) ───────────────────────────────────
+  - jupyterlab
+  - ipykernel
+
+  # ── Pip-installed packages (no reliable conda recipe) ──────────────────
+  - pip
+  - pip:
+      - sopa     # if conda-forge ships sopa in your platform, move it above
+      - senepy
+      - muon     # WNN multi-modal integration (script 13)

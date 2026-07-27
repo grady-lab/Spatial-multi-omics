@@ -1,0 +1,11 @@
+﻿core,n polygons,polygons_are_tissue_type,other_is_tissue_type,polygons_are_dysplasia,other_is_dysplasia
+R1-CA-2,1,TA,CA,LGD,CA
+T1-TA-1,1,TA,N,LGD,N
+Y1-TA-1,1,TA,N,LGD,N
+Y1-TA-2,4,TA,N,LGD,N
+J1-CA-2,4,CA,TA,CA,LGD
+L1-TA-1,1,TA,N,LGD,N
+L1-TA-4,2,TA,TA,HGD,LGD
+Q1-TA-4,1,TA,TA,HGD,LGD
+M1-TA-1,1,TA,N,LGD,N
+Y2-TA-2,2,TA,N,LGD,N

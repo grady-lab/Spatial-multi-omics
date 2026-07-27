@@ -1,0 +1,102 @@
+,core_id,patient_id,tissue_type,tissue_type_dysplasia,tissue_type_fine,mixed_core,mixed_core_tissue_type,mixed_core_dysplasia,mix_type,distant_normal,age,gender,colon_location
+0,J1-CA-1,J,CA,CA,CA,,,,,,65,F,Sigmoid
+1,J1-CA-2,J,,,mixed,True,True,,"LGD,CA",,65,F,Sigmoid
+2,J1-N-1,J,N,N,Adj. N,,,,,,65,F,Sigmoid
+3,J1-N-2,J,N,N,Adj. N,,,,,,65,F,Sigmoid
+4,J1-TA-1,J,AD,LGD,AD,,,,,,65,F,Sigmoid
+5,K1-CA-1,K,CA,CA,CA,,,,,,73,F,Right Colon
+6,K1-CA-2,K,CA,CA,CA,,,,,,73,F,Right Colon
+7,K1-CA-3,K,CA,CA,CA,,,,,,73,F,Right Colon
+8,K1-TA-1,K,AD,LGD,AD,,,,,,73,F,Right Colon
+9,K2-N-1,K,N,N,Dist. N,,,,,True,73,F,Right Colon
+10,K2-N-2,K,N,N,Dist. N,,,,,True,73,F,Right Colon
+11,L1-CA-1,L,CA,CA,CA,,,,,,71,M,Sigmoid
+12,L1-TA-1,L,,,mixed,True,True,,"LGD,N",,71,M,Sigmoid
+13,L1-TA-2,L,AD,LGD,AD,,,,,,71,M,Sigmoid
+14,L1-TA-3,L,AD,LGD,AD,,,,,,71,M,Sigmoid
+15,L1-TA-4,L,AD,,AD,True,,True,,,71,M,Sigmoid
+16,L2-N-1,L,N,N,Dist. N,,,,,True,71,M,Sigmoid
+17,L2-N-2,L,N,N,Dist. N,,,,,True,71,M,Sigmoid
+18,M1-CA-2,M,CA,CA,CA,,,,,,64,M,Sigmoid
+19,M1-N-1,M,N,N,Adj. N,,,,,,64,M,Sigmoid
+20,M1-N-2,M,N,N,Adj. N,,,,,,64,M,Sigmoid
+21,M1-TA-1,M,,,mixed,True,True,,"LGD,N",,64,M,Sigmoid
+22,N1-CA-1,N,CA,CA,CA,,,,,,53,M,Rectosigmoid
+23,N1-CA-2,N,CA,CA,CA,,,,,,53,M,Rectosigmoid
+24,N1-N-1,N,N,N,Adj. N,,,,,,53,M,Rectosigmoid
+25,N1-N-2,N,N,N,Adj. N,,,,,,53,M,Rectosigmoid
+26,N1-TA-1,N,AD,LGD,AD,,,,,,53,M,Rectosigmoid
+27,N1-TA-2,N,AD,LGD,AD,,,,,,53,M,Rectosigmoid
+28,N2-N-1,N,N,N,Dist. N,,,,,True,53,M,Rectosigmoid
+29,N2-N-2,N,N,N,Dist. N,,,,,True,53,M,Rectosigmoid
+30,O1-N-1,O,N,N,Adj. N,,,,,,49,M,Left Colon
+31,O1-N-2,O,N,N,Adj. N,,,,,,49,M,Left Colon
+32,O1-TA-1,O,AD,LGD,AD,,,,,,49,M,Left Colon
+33,O1-TA-2,O,AD,HGD,AD,,,,,,49,M,Left Colon
+34,O2-N-1,O,N,N,Dist. N,,,,,True,49,M,Left Colon
+35,O2-N-2,O,N,N,Dist. N,,,,,True,49,M,Left Colon
+36,P1-N-1,P,N,N,Dist. N,,,,,True,59,M,Sigmoid
+37,P1-N-2,P,N,N,Dist. N,,,,,True,59,M,Sigmoid
+38,P2-N-1,P,N,N,Dist. N,,,,,True,59,M,Sigmoid
+39,P2-N-2,P,N,N,Dist. N,,,,,True,59,M,Sigmoid
+40,Q1-TA-1,Q,AD,LGD,AD,,,,,,60,F,Rectal
+41,Q1-TA-2,Q,AD,LGD,AD,,,,,,60,F,Rectal
+42,Q1-TA-3,Q,AD,LGD,AD,,,,,,60,F,Rectal
+43,Q1-TA-4,Q,AD,,AD,True,,True,,,60,F,Rectal
+44,Q2-N-1,Q,N,N,Adj. N,,,,,,60,F,Rectal
+45,Q2-TA-1,Q,AD,LGD,AD,,,,,,60,F,Rectal
+46,Q2-TA-2,Q,AD,LGD,AD,,,,,,60,F,Rectal
+47,R1-CA-1,R,CA,CA,CA,,,,,,65,F,Rectal
+48,R1-CA-2,R,,,mixed,True,True,,"LGD,CA",,65,F,Rectal
+49,R1-TA-1,R,AD,LGD,AD,,,,,,65,F,Rectal
+50,R1-TA-2,R,AD,LGD,AD,,,,,,65,F,Rectal
+51,R2-N-1,R,N,N,Dist. N,,,,,True,65,F,Rectal
+52,R2-N-2,R,N,N,Dist. N,,,,,True,65,F,Rectal
+53,S1-CA-1,S,CA,CA,CA,,,,,,67,F,Right Colon
+54,S1-N-1,S,N,N,Adj. N,,,,,,67,F,Right Colon
+55,S1-N-2,S,N,N,Adj. N,,,,,,67,F,Right Colon
+56,S1-TA-1,S,AD,HGD,AD,,,,,,67,F,Right Colon
+57,S1-TA-2,S,AD,HGD,AD,,,,,,67,F,Right Colon
+58,S2-N-1,S,N,N,Dist. N,,,,,True,67,F,Right Colon
+59,S2-N-2,S,N,N,Dist. N,,,,,True,67,F,Right Colon
+60,T1-CA-1,T,CA,CA,CA,,,,,,73,M,Right Colon
+61,T1-CA-2,T,CA,CA,CA,,,,,,73,M,Right Colon
+62,T1-N-1,T,N,N,Adj. N,,,,,,73,M,Right Colon
+63,T1-TA-1,T,,,mixed,True,True,,"LGD,N",,73,M,Right Colon
+64,T1-TA-2,T,AD,LGD,AD,,,,,,73,M,Right Colon
+65,T2-N-1,T,N,N,Dist. N,,,,,True,73,M,Right Colon
+66,T2-N-2,T,N,N,Dist. N,,,,,True,73,M,Right Colon
+67,U2-N-1,U,N,N,Dist. N,,,,,True,42,F,Rectal
+68,U2-N-2,U,N,N,Dist. N,,,,,True,42,F,Rectal
+69,V1-CA-1,V,CA,CA,CA,,,,,,81,M,Right Colon
+70,V1-CA-2,V,CA,CA,CA,,,,,,81,M,Right Colon
+71,V1-TA-1,V,AD,LGD,AD,,,,,,81,M,Right Colon
+72,V1-TA-2,V,AD,LGD,AD,,,,,,81,M,Right Colon
+73,V2-N-1,V,N,N,Dist. N,,,,,True,81,M,Right Colon
+74,V2-N-2,V,N,N,Dist. N,,,,,True,81,M,Right Colon
+75,W1-CA-1,W,CA,CA,CA,,,,,,63,F,Right Colon
+76,W1-CA-2,W,CA,CA,CA,,,,,,63,F,Right Colon
+77,W1-N-1,W,N,N,Adj. N,,,,,,63,F,Right Colon
+78,W1-N-2,W,N,N,Adj. N,,,,,,63,F,Right Colon
+79,W1-TA-1,W,AD,LGD,AD,,,,,,63,F,Right Colon
+80,W2-N-1,W,N,N,Dist. N,,,,,True,63,F,Right Colon
+81,W2-N-2,W,N,N,Dist. N,,,,,True,63,F,Right Colon
+82,X1-CA-1,X,CA,CA,CA,,,,,,60,M,Right Colon
+83,X1-CA-2,X,CA,CA,CA,,,,,,60,M,Right Colon
+84,X1-N-1,X,N,N,Adj. N,,,,,,60,M,Right Colon
+85,X1-N-2,X,N,N,Adj. N,,,,,,60,M,Right Colon
+86,X1-TA-1,X,AD,LGD,AD,,,,,,60,M,Right Colon
+87,X1-TA-2,X,AD,LGD,AD,,,,,,60,M,Right Colon
+88,X2-N-1,X,N,N,Dist. N,,,,,True,60,M,Right Colon
+89,X2-N-2,X,N,N,Dist. N,,,,,True,60,M,Right Colon
+90,Y1-CA-1,Y,CA,CA,CA,,,,,,71,M,Right Colon
+91,Y1-CA-2,Y,CA,CA,CA,,,,,,71,M,Right Colon
+92,Y1-N-1,Y,N,N,Adj. N,,,,,,71,M,Right Colon
+93,Y1-N-2,Y,N,N,Adj. N,,,,,,71,M,Right Colon
+94,Y1-TA-1,Y,,,mixed,True,True,,"LGD,N",,71,M,Right Colon
+95,Y1-TA-2,Y,,,mixed,True,True,,"LGD,N",,71,M,Right Colon
+96,Y2-N-1,Y,N,N,Adj. N,,,,,,71,M,Right Colon
+97,Y2-N-2,Y,N,N,Adj. N,,,,,,71,M,Right Colon
+98,Y2-TA-1,Y,AD,LGD,AD,,,,,,71,M,Right Colon
+99,Y2-TA-2,Y,,,mixed,True,True,,"LGD,N",,71,M,Right Colon
+100,Y2-TA-3,Y,AD,LGD,AD,,,,,,71,M,Right Colon

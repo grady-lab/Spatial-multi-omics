@@ -1,0 +1,53 @@
+# ---- Large data formats ----
+*.h5ad
+*.h5
+*.zarr/
+**/*.zarr/
+
+# ---- Data tree: ignore contents but keep the directory skeleton ----
+# Annotation CSVs and metadata CSVs are intentionally tracked.
+data/raw/*
+!data/raw/.gitkeep
+!data/raw/README.md
+
+data/interim/**/*
+!data/interim/**/.gitkeep
+
+data/processed/**/*
+!data/processed/**/.gitkeep
+
+# ---- Results tree: ignore outputs, keep skeleton ----
+results/figures/*
+!results/figures/.gitkeep
+results/tables/*
+!results/tables/.gitkeep
+
+# ---- Local / machine-specific config ----
+config.local.yaml
+
+# ---- PHI — never commit, even if accidentally placed in the tree ----
+scripts/notebooks/_private/
+data/metadata/patient_ids_to_surg_id.csv
+data/metadata/trio-pt-anno-full-4-3-26.csv
+
+# ---- Cluster / runtime ----
+slurmout/
+
+# ---- Jupyter ----
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/
+
+# ---- Python ----
+__pycache__/
+*.pyc
+
+# ---- Environments ----
+.env
+venv/
+.snakemake/
+
+# ---- Misc ----
+.DS_Store
+*.tmp
+*.log
+*.out
