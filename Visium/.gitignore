@@ -57,4 +57,9 @@ Rmd/*.html
 !Rmd/Clean_plotting.html
 !Rmd/Supple_plotting.html
 Rmd/*.pdf
+
+# Internal validation notes
+REPRODUCIBILITY_TESTING.md
+TESTING.md
+
 .DS_Store
