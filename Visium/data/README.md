@@ -43,6 +43,4 @@ The pipeline writes or reads the following large files under `data/derived/`:
 
 For local testing, either `.qs` path may be a symbolic link to an archived `.qs`, `.qs2`, or `.rds` object. `read_analysis_archive()` resolves the link and selects the matching reader; the optional `qs2` package is needed only for `.qs2` targets.
 
-The public data record should provide these processed objects when raw-data reruns are impractical.
-
 The reference curation in `R/scrna_reference.R` is a path-parameterized version of the final pipeline in `Scripts/Processing the marteau_TA.R`. The released Cell2location script is a path-parameterized version of the authoritative analysis script `Data/Python/Deconv/run_cell2location.py`. The stLearn script was distilled from `Data/Python/h5ad_files/LoopforPseudotime.ipynb`. See `python/README.md`; neither Python workflow is launched from R.
