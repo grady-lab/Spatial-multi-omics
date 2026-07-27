@@ -30,6 +30,6 @@ conda run -n adenoma-cell2location python python/run_cell2location.py \
   --alpha 20
 ```
 
-These defaults reproduce the authoritative script: the reference regression model is trained for 500 epochs, the spatial model for 5,000 epochs with a batch size of 2,500, and posterior export uses 1,000 samples. The spatial model uses 10 expected cells per spot and detection `alpha = 20`. Its fifth-percentile posterior abundance estimates are written to `data/derived/cell2location/cell2location_q05.csv`.
+The reference regression model is trained for 500 epochs, the spatial model for 5,000 epochs with a batch size of 2,500, and posterior export uses 1,000 samples. The spatial model uses 10 expected cells per spot and detection `alpha = 20`. Its fifth-percentile posterior abundance estimates are written to `data/derived/cell2location/cell2location_q05.csv`.
 
-The workflow also saves the trained spatial model, runs NMF colocalization for 6 through 14 factors with three restarts, and adds cell-type-specific expected-expression matrices as layers of `cell2location_posterior.h5ad`. If `reference_signatures.csv` already exists in the output directory, it is reused, matching the original script's checkpoint behavior.
+The workflow also saves the trained spatial model, runs NMF colocalization for 6 through 14 factors with three restarts, and adds cell-type-specific expected-expression matrices as layers of `cell2location_posterior.h5ad`. If `reference_signatures.csv` already exists in the output directory, it is reused to resume from the existing output.

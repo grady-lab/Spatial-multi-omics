@@ -28,13 +28,12 @@ results/                     Generated tables and figures
 METHODS_CODE_MAP.md          Mapping from the Methods section to executable code
 ```
 
-## Please find all the figures in the Visium analyses at
-Rmd/
+## Rendered figure notebooks
 
-  Clean_plotting.html        https://htmlpreview.github.io/?https://github.com/grady-lab/Spatial-multi-omics/blob/main/Visium/Rmd/Clean_plotting.html
-  
-  Supple_plotting.html       https://htmlpreview.github.io/?https://github.com/grady-lab/Spatial-multi-omics/blob/main/Visium/Rmd/Supple_plotting.html
+The self-contained HTML notebooks for the Visium figures are available below:
 
+- [Main figures (`Clean_plotting.html`)](https://htmlpreview.github.io/?https://github.com/grady-lab/Spatial-multi-omics/blob/main/Visium/Rmd/Clean_plotting.html)
+- [Supplementary figures (`Supple_plotting.html`)](https://htmlpreview.github.io/?https://github.com/grady-lab/Spatial-multi-omics/blob/main/Visium/Rmd/Supple_plotting.html)
 
 ## Reproducing the analysis
 
@@ -47,14 +46,14 @@ Rmd/
 7. Run `Rmd/Visium_analyses.Rmd` from the repository root. SenePy is selected through reticulate from the `adenoma-senepy` environment; stLearn and Cell2location results are imported from `data/derived/`. To reconstruct `visium_semla.qs` from `combined_final` and the Space Ranger files, render with the parameter `rebuild_staffli: true`.
 8. Render `Rmd/Clean_plotting.Rmd` and `Rmd/Supple_plotting.Rmd` after the derived objects have been generated.
 
-The notebooks use project-relative paths and never require the original analyst's home directory.
-
-See `REPRODUCIBILITY_TESTING.md` for a step-by-step test run and comparisons against archived results.
+The notebooks use project-relative paths.
 
 ## Data availability
 
-The accession/URL for raw and processed data must be inserted here before the repository is made public. Large objects are intentionally ignored by Git; do not force-add them.
+Raw sequencing data and large processed objects are distributed separately from this repository. Their required layout and filenames are documented in `data/README.md`; availability information is provided with the associated manuscript.
 
 ## Citation and license
 
-Add the final manuscript citation, repository DOI, and the authors' selected license before release.
+Please cite the associated manuscript when using this code.
+
+The code is released under the GPLv3 license, as recorded in `DESCRIPTION`.
