@@ -12,6 +12,7 @@
 | CytoTRACE 2 | `R/scoring.R`: `prepare_cytotrace2_input()`, `run_cytotrace2()`; clusters C0, C1, C2, C3, C4, and C6 only |
 | irGSEA/RRA enrichment | `R/scoring.R`: `run_irgsea()` |
 | SenePy and cohort-wide outliers | `R/Cal_senepy.R`: `Calculate_senepy()`; `R/scoring.R`: `classify_senepy_outliers()` |
+| SSIE stemness–senescence–IEX co-occurrence score | `R/scoring.R`: `calculate_ssie_cooccurrence()`; `Rmd/Visium_analyses.Rmd`, `senepy-cell-cycle-cytotrace` and `sample-level-statistics` sections |
 | Differential expression | `Rmd/Visium_analyses.Rmd`, `differential-expression-gdf15` section |
 | Bivariate local Moran's I | `R/spatial_statistics.R`: `bivar_local_moran_seurat()` |
 | Public scRNA-seq reference curation and Cell2location | `R/scrna_reference.R`: `curate_marteau_reference()`, `validate_marteau_reference()`, `export_marteau_reference_h5ad()`; `Rmd/Visium_analyses.Rmd`, `build-scrna-reference` and `import-cell2location-output` sections (including reported aggregate abundances); independent Python workflow: `python/run_cell2location.py` |

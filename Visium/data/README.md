@@ -29,7 +29,7 @@ Provide these files under `data/reference/`:
 The pipeline writes or reads the following large files under `data/derived/`:
 
 - `visium_integrated.qs`: final Seurat object after multimodal integration and RNA-only mapping.
-- `visium_scored.qs`: final object after gene-set, SenePy, cell-cycle, pseudotime, and deconvolution metadata are added.
+- `visium_scored.qs`: final object after gene-set, SenePy, SSIE co-occurrence, cell-cycle, pseudotime, and deconvolution metadata are added.
 - `marteau_cell2location_reference.qs`: curated 52,871-cell Marteau/Chen reference with the final 28 Cell2location annotations.
 - `epithelial_diffusion_map.qs`: epithelial subset with diffusion-map coordinates.
 - `single_cell_validation_full.qs`: scored full epithelial-lineage Lau discovery and validation cohorts used for Supplementary Figures 6 and 7.

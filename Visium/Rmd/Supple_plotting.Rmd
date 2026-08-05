@@ -23,8 +23,13 @@ library(dittoSeq)
 library(ggpubr)
 source(here("R", "plotting.R"))
 source(here("R", "spatial_statistics.R"))
+source(here("R", "scoring.R"))
 
 combined_final <- qread(here("data", "derived", "visium_scored.qs"))
+if (!"SSIE" %in% colnames(combined_final@meta.data)) {
+  ssie_score <- calculate_ssie_cooccurrence(combined_final@meta.data)
+  combined_final$SSIE <- ssie_score[colnames(combined_final)]
+}
 # for plotting with SCP, copy the Seurat5 data as a Seurat4 assay
 # combined_final[["Spatial4"]] <- as(object = combined_final[["Spatial"]], Class = "Assay")
 # DefaultAssay(combined_final) <- "Spatial4"
@@ -149,9 +154,9 @@ picked_marker_gene <- c(
 )
 adt_markers <- c(
   "ADT-EPCAM", "ADT-KRT5", "ADT-PECAM1", "ADT-VIM", "ADT-ACTA2",
-  "ADT-PTPRC", "ADT-PTPRC.2", "ADT-CD3E", "ADT-CD4", "ADT-CD8A",
+  "ADT-PTPRC", "ADT-PTPRC.2", "ADT-CD3E", "ADT-CD8A",
   "ADT-CD19", "ADT-MS4A1", "ADT-CD68", "ADT-CD14", "ADT-CD163",
-  "ADT-ITGAX", "ADT-CD40", "ADT-CCR7", "ADT-CXCR5"
+  "ADT-ITGAX", "ADT-CD40",  "ADT-CXCR5" , "ADT-CD274", "ADT-PDCD1"
 )
 
 DefaultAssay(combined_final) <- "Spatial"
@@ -539,50 +544,24 @@ save_plot(s4i, file.path(figure_dir, "SFigure4I_spatial_deconvolution.pdf"), 13,
 DefaultAssay(combined_final) <- "Spatial"
 ```
 
-## Supplementary Figure 4J: ADT signals in paired pathology regions
+## Supplementary Figure 4J: spatial IEX and SSIE co-occurrence scores
 
-```{r sfigure-4j-adt-region-comparison}
-adt_region_tests <- readRDS(here("results", "tables", "adt_region_tests.rds"))
-adt_region_data <- imap_dfr(adt_region_tests, function(result, feature) {
-  result$wide |>
-    pivot_longer(
-      c(Normal, `Low-grade`),
-      names_to = "Adenoma",
-      values_to = "Signal"
-    ) |>
-    mutate(
-      Feature = feature,
-      Adenoma = recode(Adenoma, `Low-grade` = "Adenoma")
-    )
-}) |>
-  mutate(
-    Adenoma = factor(Adenoma, levels = c("Normal", "Adenoma")),
-    Feature = recode(
-      Feature,
-      `ADT-CD8A` = "Normalized ADT-CD8A signal",
-      `ADT-CD3E` = "Normalized ADT-CD3E signal"
-    )
-  )
-
-s4j <- ggpubr::ggboxplot(
-  adt_region_data,
-  x = "Adenoma",
-  y = "Signal",
-  add = "point",
-  fill = "Adenoma"
-) +
-  ggsci::scale_fill_aaas() +
-  geom_line(aes(group = Sample_ID), alpha = 0.5) +
-  ggpubr::stat_compare_means(
-    method = "wilcox.test",
-    paired = TRUE,
-    method.args = list(exact = FALSE),
-    label = "p.format"
-  ) +
-  facet_wrap(~Feature, scales = "free_y") +
-  labs(x = NULL, y = NULL) + NoLegend()
+```{r sfigure-4j-iex-ssie-spatial}
+DefaultAssay(combined_final) <- "Spatial"
+s4j_plots <- SpatialFeaturePlot(
+  combined_final,
+  features = c("IEX", "SSIE"),
+  images = "R4_large_1",
+  combine = FALSE,
+  keep.scale = "feature"
+)
+s4j <- wrap_plots(
+  s4j_plots[[1]] + ggtitle("IEX score"),
+  s4j_plots[[2]] + ggtitle("SSIE co-occurrence score"),
+  ncol = 2
+)
 s4j
-save_plot(s4j, file.path(figure_dir, "SFigure4J_ADT_region_comparison.pdf"), 7, 4)
+save_plot(s4j, file.path(figure_dir, "SFigure4J_IEX_SSIE_spatial.pdf"), 6, 3)
 ```
 
 # Supplementary Figure 5: Cell2location-inferred cell types

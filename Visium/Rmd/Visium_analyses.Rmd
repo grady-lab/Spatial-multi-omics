@@ -127,6 +127,8 @@ Cluster names used throughout the paper were assigned by jointly reviewing these
 
 CytoTRACE2 is run only on the predominantly epithelial clusters C0, C1, C2, C3, C4, and C6. The joined `Spatial` assay is copied to a conventional `RNA` assay, the object is reduced to that assay plus the existing WNN UMAP, and raw counts are supplied to CytoTRACE2. Scores are aligned back to the full object by barcode; excluded clusters remain `NA`.
 
+The SSIE co-occurrence score captures the joint spatial expression of stemness, senescence, and IEX programs. Within each sample, Stem Signature, SenePy, and IEX values are converted to mid-rank percentiles using `(rank - 0.5) / n`; SSIE is their geometric mean. It ranges from zero to one, with higher values indicating simultaneous elevation of all three programs.
+
 ```{r irgsea}
 gene_sets <- readRDS(here("data", "reference", "gene_sets.rds"))
 combined_final <- run_irgsea(
@@ -168,6 +170,14 @@ combined_final <- classify_senepy_outliers(
   score_col = "Senepy",
   output_col = "SenePyhigh"
 )
+ssie_score <- calculate_ssie_cooccurrence(
+  combined_final@meta.data,
+  sample_col = "Sample_ID",
+  stem_col = "Stem_Signature",
+  senescence_col = "Senepy",
+  iex_col = "IEX"
+)
+combined_final$SSIE <- ssie_score[colnames(combined_final)]
 combined_final <- add_cell_cycle_scores(combined_final, assay = "Spatial")
 
 cytotrace_input <- prepare_cytotrace2_input(
@@ -813,7 +823,7 @@ write_csv(senescence_distance_bins, here("results", "tables", "surface_distance_
 
 All continuous-value comparisons use `compare_score_clusters_paired()`. Spot-level conditions are summarized within each sample and compared with a paired Wilcoxon signed-rank test; sample-level conditions are summarized per sample and compared with an unpaired Wilcoxon rank-sum test. The reported effect is the median for `level_a` minus the median for `level_b`.
 
-The Senepy comparisons correspond to the sample-level cluster summary plotted in `Supple_plotting.Rmd`. Pseudotime is compared between paired Low-grade and Normal regions, and between Large and Small adenomas after restricting the latter analysis to Low-grade spots. Every continuous comparison uses per-sample medians and requires at least 30 spots in an analyzed sample/condition stratum. Benjamini-Hochberg-adjusted p-values are reported across the three Senepy cluster contrasts.
+The Senepy comparisons correspond to the sample-level cluster summary plotted in `Supple_plotting.Rmd`. SSIE is compared between clusters C2 and C4. Pseudotime is compared between paired Low-grade and Normal regions, and between Large and Small adenomas after restricting the latter analysis to Low-grade spots. Every continuous comparison uses per-sample medians and requires at least 30 spots in an analyzed sample/condition stratum. Benjamini-Hochberg-adjusted p-values are reported across the three Senepy cluster contrasts.
 
 All categorical-proportion comparisons use `run_comp_tests()`. The function forms a complete category-proportion table for every sample/condition stratum, applies the Hellinger transformation before PERMANOVA and its dispersion check, and performs category-wise Wilcoxon tests with Benjamini-Hochberg correction. Pathology is a spot-level condition, so Normal and Low-grade regions are paired within samples that contain both. Adenoma post-hoc effects are Low-grade minus Normal. Adenoma size is a sample-level condition, so Small and Large samples are compared as independent groups. The same helper can be used for other categorical outcomes, including Moran's I classifications, by changing `category_col`.
 
@@ -854,6 +864,18 @@ senepy_c4_vs_c2 <- compare_score_clusters_paired(
   min_spots = 30
 )
 
+ssie_c2_vs_c4 <- compare_score_clusters_paired(
+  combined_final@meta.data,
+  score_col = "SSIE",
+  sample_col = "Sample_ID",
+  condition_col = "combined_cluster",
+  level_a = "2",
+  level_b = "4",
+  condition_level = "spot",
+  agg = "median",
+  min_spots = 30
+)
+
 epithelial_metadata <- combined_final@meta.data |>
   filter(Adenoma %in% c("Normal", "Low-grade"))
 pseudotime_lowgrade_vs_normal <- compare_score_clusters_paired(
@@ -886,6 +908,7 @@ continuous_score_tests <- list(
   senepy_c2_vs_c3 = senepy_c2_vs_c3,
   senepy_c4_vs_c3 = senepy_c4_vs_c3,
   senepy_c4_vs_c2 = senepy_c4_vs_c2,
+  ssie_c2_vs_c4 = ssie_c2_vs_c4,
   pseudotime_lowgrade_vs_normal = pseudotime_lowgrade_vs_normal,
   pseudotime_large_vs_small_lowgrade = pseudotime_large_vs_small_lowgrade
 )
@@ -901,12 +924,13 @@ senepy_primary_p_adjusted <- p.adjust(
 
 continuous_test_summary <- tibble(
   comparison = names(continuous_score_tests),
-  score = c("Senepy", "Senepy", "Senepy", "dpt_pseudotime", "dpt_pseudotime"),
+  score = c("Senepy", "Senepy", "Senepy", "SSIE", "dpt_pseudotime", "dpt_pseudotime"),
   condition = c(
-    "combined_cluster", "combined_cluster", "combined_cluster", "Adenoma", "LargeSmall"
+    "combined_cluster", "combined_cluster", "combined_cluster", "combined_cluster",
+    "Adenoma", "LargeSmall"
   ),
-  level_a = c("2", "4", "4", "Low-grade", "Large"),
-  level_b = c("3", "3", "2", "Normal", "Small"),
+  level_a = c("2", "4", "4", "2", "Low-grade", "Large"),
+  level_b = c("3", "3", "2", "4", "Normal", "Small"),
   mode = vapply(continuous_score_tests, `[[`, character(1), "mode"),
   n_a = vapply(
     continuous_score_tests,
@@ -923,14 +947,14 @@ continuous_test_summary <- tibble(
   median_difference_a_minus_b = vapply(continuous_score_tests, `[[`, numeric(1), "diff_median"),
   statistic = vapply(continuous_score_tests, function(x) unname(x$test$statistic), numeric(1)),
   p_value = vapply(continuous_score_tests, function(x) x$test$p.value, numeric(1)),
-  p_adjusted_bh = c(unname(senepy_primary_p_adjusted), NA_real_, NA_real_)
+  p_adjusted_bh = c(unname(senepy_primary_p_adjusted), NA_real_, NA_real_, NA_real_)
 )
 
 write_csv(continuous_test_summary, here("results", "tables", "continuous_score_tests.csv"))
 saveRDS(continuous_score_tests, here("results", "tables", "continuous_score_tests.rds"))
 continuous_test_summary
 
-# Supplementary Figure 4J uses the same paired, sample-level median strategy
+# Figure 3I uses the same paired, sample-level median strategy
 # for the two ADT signals. ADT-incomplete spots remain missing after the join.
 adt_region_features <- c("ADT-CD8A", "ADT-CD3E")
 adt_joined <- JoinLayers(combined_final, assay = "ADT_dsb_by_slide")

@@ -48,6 +48,47 @@ classify_senepy_outliers <- function(
   object
 }
 
+.rank_percentile <- function(x) {
+  n_nonmissing <- sum(!is.na(x))
+  if (n_nonmissing == 0L) return(rep(NA_real_, length(x)))
+  (rank(x, ties.method = "average", na.last = "keep") - 0.5) / n_nonmissing
+}
+
+calculate_ssie_cooccurrence <- function(
+    metadata,
+    sample_col = "Sample_ID",
+    stem_col = "Stem_Signature",
+    senescence_col = "Senepy",
+    iex_col = "IEX"
+) {
+  required <- c(sample_col, stem_col, senescence_col, iex_col)
+  missing <- setdiff(required, colnames(metadata))
+  if (length(missing)) {
+    stop("Missing SSIE metadata columns: ", paste(missing, collapse = ", "))
+  }
+
+  original_rownames <- rownames(metadata)
+  ranked <- metadata |>
+    dplyr::mutate(.ssie_row = seq_len(nrow(metadata))) |>
+    dplyr::group_by(.data[[sample_col]]) |>
+    dplyr::mutate(
+      .ssie_stem_percentile = .rank_percentile(.data[[stem_col]]),
+      .ssie_senescence_percentile = .rank_percentile(.data[[senescence_col]]),
+      .ssie_iex_percentile = .rank_percentile(.data[[iex_col]]),
+      .ssie_score = (
+        .data$.ssie_stem_percentile *
+          .data$.ssie_senescence_percentile *
+          .data$.ssie_iex_percentile
+      )^(1 / 3)
+    ) |>
+    dplyr::ungroup() |>
+    dplyr::arrange(.data$.ssie_row)
+
+  score <- ranked$.ssie_score
+  names(score) <- original_rownames
+  score
+}
+
 add_cell_cycle_scores <- function(object, assay = "Spatial") {
   Seurat::DefaultAssay(object) <- assay
   object <- Seurat::CellCycleScoring(
